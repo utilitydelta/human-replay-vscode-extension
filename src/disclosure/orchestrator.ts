@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { classifyReplay } from "./strategy";
+import { walkableSource } from "./walk";
 import { DisclosureController } from "./controller";
 import { DiffReplayController } from "./diffReplayController";
 import { revealCursor } from "./reveal";
@@ -37,11 +38,16 @@ export class ReplayOrchestrator {
         `skeletonChange=${Math.round(plan.skeletonChange * 100)}% hunks=${plan.hunks}`,
     );
     // A rewrite normally strikes the old symbol whole and descend-and-fills the
-    // new one — a walk only brace languages support. Elsewhere (python, markdown)
-    // the same gesture rides diff-replay's block surface: strike, preview, Tab
-    // applies the whole block. Same ground truth, no walk.
-    if (plan.strategy === "surgical" || spec.functionTypes.size === 0) {
-      if (plan.strategy !== "surgical") this.output.appendLine("[replay] rewrite via block swap (no walk for this language)");
+    // new one — a walk only brace languages support, and only for a bare function
+    // (the walk emits from the fn node; doc comments, attributes, and non-fn items
+    // would be silently dropped). Elsewhere the same gesture rides diff-replay's
+    // block surface: strike, preview, Tab applies the whole block. Same ground
+    // truth, no walk. An empty newSrc is a delete — the strike IS the gesture.
+    const noWalk =
+      spec.functionTypes.size === 0 ||
+      (newSrc.trim() !== "" && !walkableSource(newSrc, spec, editor.selection.active.character));
+    if (plan.strategy === "surgical" || noWalk) {
+      if (plan.strategy !== "surgical") this.output.appendLine("[replay] rewrite via block swap (not walkable: trivia, non-fn item, or no walk for this language)");
       await this.diffReplay.start(editor, oldSrc, newSrc, retro, true, inPlace, spec);
       return;
     }

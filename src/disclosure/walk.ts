@@ -117,6 +117,31 @@ function findItem(
   return null;
 }
 
+// Whether the create walk can rebuild `src` byte-exact at `baseIndent` — proven
+// by simulation, not by enumerating hazards: replay the steps and demand byte
+// equality. Anything the walk would silently lose fails here: leading doc
+// comments and attributes (a created `#[test]` would compile and never run),
+// a non-fn item or a wrapping mod (no fn node / dropped wrapper), blank lines
+// inside the body (the sibling lead collapses them), a column mismatch (close
+// braces would land at the wrong indent). A non-walkable source must ride the
+// whole-symbol block-swap surface instead: same ground truth, one Tab.
+export function walkableSource(src: string, spec: LanguageSpec = RUST, baseIndent = 0): boolean {
+  if (spec.functionTypes.size === 0) return false;
+  let steps: Step[];
+  try {
+    steps = computeSteps(src, spec, baseIndent);
+  } catch {
+    return false; // no function node in source
+  }
+  let buf = "";
+  let cur = 0;
+  for (const s of steps) {
+    buf = buf.slice(0, cur) + s.insert + buf.slice(cur);
+    cur = s.cursorOffset;
+  }
+  return buf === src;
+}
+
 // Extend an item's start back over the doc comments and attributes attached above
 // it. Grammars model outer doc comments and attributes as PRECEDING SIBLINGS, not
 // children, so the item node excludes them — and a change confined to the comment

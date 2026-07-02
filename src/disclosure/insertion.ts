@@ -24,8 +24,8 @@ export function separatorToInsert(text: string): string {
 
 export type CreatePlacement =
   /** Replace [start, end) of the target with `scaffold`, then park the cursor at
-   *  `cursorAt` (post-edit offset, on a fresh line at the child indent). */
-  | { kind: "container"; start: number; end: number; scaffold: string; cursorAt: number; container: string }
+   *  `cursorAt` (post-edit offset, on a fresh line at column `indent`). */
+  | { kind: "container"; start: number; end: number; scaffold: string; cursorAt: number; indent: number; container: string }
   /** The symbol is top-level in the sandbox — end-of-file is its real home. */
   | { kind: "top-level" }
   /** Nested in the sandbox, but the container can't be resolved in the target. */
@@ -153,9 +153,9 @@ export function planCreateInsertion(
     if (braced && at >= body.endIndex) {
       return { kind: "blocked", reason: `container \`${header}\` is single-line — no landing line for the new symbol` };
     }
-    const pad = " ".repeat(colOf(targetText, anchor.startIndex));
-    const scaffold = `\n\n${pad}`;
-    return { kind: "container", start: at, end: at, scaffold, cursorAt: at + scaffold.length, container: header };
+    const indent = colOf(targetText, anchor.startIndex);
+    const scaffold = `\n\n${" ".repeat(indent)}`;
+    return { kind: "container", start: at, end: at, scaffold, cursorAt: at + scaffold.length, indent, container: header };
   }
 
   // Empty body. Brace languages open it; an indent-block body always has at
@@ -171,6 +171,7 @@ export function planCreateInsertion(
     end: body.endIndex - 1,
     scaffold,
     cursorAt: open + 1 + childIndent,
+    indent: childIndent,
     container: header,
   };
 }

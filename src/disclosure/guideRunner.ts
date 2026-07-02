@@ -5,7 +5,7 @@ import { ReplayGuide, ReplayStep, parseGuide } from "./guide";
 import { DisclosureController } from "./controller";
 import { ReplayOrchestrator } from "./orchestrator";
 import { parseRoot } from "./diff";
-import { findItemByName, leadingTriviaStart, SyntaxNode } from "./walk";
+import { findItemByName, leadingTriviaStart, walkableSource, SyntaxNode } from "./walk";
 import { planCreateInsertion, separatorToInsert } from "./insertion";
 import { ProgramCounter, StepStatus } from "./programCounter";
 import { extractSymbol, stepAlreadyLanded } from "./resume";
@@ -382,8 +382,22 @@ export class GuideRunner {
     this.completeCurrent(); // flows into the next step — file drops keep the momentum
   }
 
-  /** Run a step by index: open its file, position the cursor, drive the engine. */
+  /** Run a step by index: open its file, position the cursor, drive the engine.
+   *  Never throws — callers include fire-and-forget auto-advance, so an engine
+   *  error marks the step blocked and surfaces instead of vanishing as an
+   *  unhandled rejection with the counter stuck in-flight. */
   async runStep(index: number, clearDiagnostics: (doc: vscode.TextDocument) => void): Promise<void> {
+    try {
+      await this.runStepUnguarded(index, clearDiagnostics);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.output.appendLine(`[guide] step ${this.guide?.steps[index]?.id ?? index} failed: ${msg}`);
+      vscode.window.showErrorMessage(`Replay Tab: step failed — ${msg}. Marked blocked; skip it or fix the guide.`);
+      this.markCurrentBlocked();
+    }
+  }
+
+  private async runStepUnguarded(index: number, clearDiagnostics: (doc: vscode.TextDocument) => void): Promise<void> {
     const step = this.guide?.steps[index];
     if (!step) {
       vscode.window.showWarningMessage("Replay Tab: no such step in the loaded guide.");
@@ -435,11 +449,13 @@ export class GuideRunner {
         if (existing !== undefined) {
           this.output.appendLine(`[guide] step ${step.id}: ${step.symbol} already in target — resuming as diff-replay`);
           await this.orchestrator.start(editor, existing, after!, step.retro, true, spec);
-        } else if (spec.functionTypes.size === 0) {
-          // No create walk for this language — the whole symbol lands as one
-          // block ghost at the parked cursor (real sandbox bytes, one Tab). The
-          // orchestrator's no-walk guard routes this to the block-swap surface.
-          this.output.appendLine(`[guide] step ${step.id}: ${spec.id} has no walk — whole-symbol insert`);
+        } else if (!walkableSource(after!, spec, editor.selection.active.character)) {
+          // The walk can only rebuild a bare function — no walk for this language,
+          // a non-fn item (struct/const/trait), or leading doc comments/attributes
+          // the walk would drop. The whole symbol lands as one block ghost at the
+          // parked cursor instead (real sandbox bytes, one Tab). The orchestrator's
+          // no-walk guard routes this to the block-swap surface.
+          this.output.appendLine(`[guide] step ${step.id}: not walkable — whole-symbol insert`);
           await this.orchestrator.start(editor, "", after!, step.retro, true, spec);
         } else {
           await this.disclosure.start(editor, after!, step.retro, spec);

@@ -37,7 +37,8 @@ fs.writeFileSync(
     `export { resolveStep } from "../src/disclosure/replay";\n` +
     `export { parseRoot } from "../src/disclosure/diff";\n` +
     `export { languageForFile } from "../src/disclosure/language";\n` +
-    `export { planCreateInsertion, separatorToInsert } from "../src/disclosure/insertion";\n`,
+    `export { planCreateInsertion, separatorToInsert } from "../src/disclosure/insertion";\n` +
+    `export { walkableSource } from "../src/disclosure/walk";\n`,
 );
 esbuild.buildSync({
   entryPoints: [entry],
@@ -47,7 +48,7 @@ esbuild.buildSync({
   platform: "node",
   external: ["tree-sitter", "tree-sitter-rust", "tree-sitter-c-sharp", "tree-sitter-typescript", "tree-sitter-python", "@tree-sitter-grammars/tree-sitter-markdown"],
 });
-const { parseGuide, extractSymbol, stepAlreadyLanded, classifyReplay, buildReplaySteps, resolveStep, parseRoot, languageForFile, planCreateInsertion, separatorToInsert } =
+const { parseGuide, extractSymbol, stepAlreadyLanded, classifyReplay, buildReplaySteps, resolveStep, parseRoot, languageForFile, planCreateInsertion, separatorToInsert, walkableSource } =
   require(bundle);
 const cleanup = () => {
   fs.rmSync(bundle, { force: true });
@@ -172,18 +173,22 @@ for (const step of guide.steps) {
       failures.push(step.id);
       note(step, "FAIL", `target file ${rel} unreadable — a symbol create needs an existing file`);
     } else {
-      // The runner's exact placement decision, against the dry-run target.
+      // The runner's exact placement + surface decisions, against the dry-run
+      // target. Walk only for a bare fn; trivia-carrying and non-fn symbols land
+      // whole-symbol (the walk would silently drop doc comments/attributes).
       const placement = planCreateInsertion(targetText, sandboxText, step.symbol, spec);
+      const indent = placement.kind === "container" ? placement.indent : 0;
+      const surface = walkableSource(after, spec, indent) ? "disclosure walk" : "whole-symbol";
       if (placement.kind === "blocked") {
         failures.push(step.id);
         note(step, "FAIL", `placement blocked — ${placement.reason}`);
       } else if (placement.kind === "container") {
         const scaffolded = targetText.slice(0, placement.start) + placement.scaffold + targetText.slice(placement.end);
         simulated.set(rel, scaffolded.slice(0, placement.cursorAt) + after + scaffolded.slice(placement.cursorAt));
-        note(step, "ok", `${after.length} bytes, disclosure walk inside \`${placement.container}\``);
+        note(step, "ok", `${after.length} bytes, ${surface} inside \`${placement.container}\``);
       } else {
         simulated.set(rel, targetText + separatorToInsert(targetText) + after);
-        note(step, "ok", `${after.length} bytes, disclosure walk at end of file`);
+        note(step, "ok", `${after.length} bytes, ${surface} at end of file`);
       }
     }
     continue;
