@@ -57,9 +57,38 @@ walk frontier (the climb-out in `offerRecovery`). Only Esc freed it.
 - [x] Tab only acts as "continue the walk" when the caret is in the walk's
   container; elsewhere Tab stays an indent (context key gates the keybinding).
 
+## 5. Swallowed trigger turned Tab into typed bytes (retest finding)
+
+**Observed:** Segment 2 armed with no ghost. Tab fell through to the editor and
+typed a 4-space indent at the anchor; the settle re-anchor then showed the
+ghost after those bytes and the class landed behind them — file differed from
+the sandbox on line 3, step still marked done. Ground truth violated.
+
+- [x] Ghost-less Tab on an armed diff-replay step nudges the ghost (on the
+  armed line) or stays a plain indent (everywhere else). Tab can never type
+  bytes into the replay by accident.
+- [x] File-walk completion verifies the buffer against the sandbox concat;
+  a mismatch blocks the step instead of lying green. Re-running a blocked
+  create-file lands the delta as Tab-gated patch hunks.
+- [x] The armed-ghost gap in the logs is closed (`[diff-replay] … armed`).
+
+## 6. Whole class in one Tab (retest finding)
+
+**Observed:** The comment+class segment landed as a single block ghost. Wanted
+AST-level Tabs.
+
+- [x] Container walk: classes, impls, and mods are descendable — shell first,
+  members one by one, methods descending like functions. Walk layout is now
+  source-derived (blank lines between members survive), and the segment's
+  trailing newline is typed so last segments actually walk. Verified across
+  C#, TS/TSX, Rust; Python/Markdown/HTML/CSS stay block-per-segment by design
+  (no create walk).
+
 ## F5 checks (feel gates — the human signs these off)
 
 - [ ] Create-file discloses item by item; comment blocks read before Tab
+- [ ] C# class walks: shell, consts, method shell, statements — not one blob
+- [ ] Ghost-less Tab nudges; Tab in your own code still indents
 - [ ] Phase boundary pauses; explicit continue works from status bar and tree
 - [ ] Back/forward rewinds across step jumps
 - [ ] Manual mid-step editing never loses the caret; ghost returns on re-entry
