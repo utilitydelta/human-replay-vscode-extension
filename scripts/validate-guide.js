@@ -5,8 +5,13 @@
 // Runs the REAL engine code (esbuild-bundled, same as the test oracles): parses
 // the guide, resolves every step's bytes from the target and sandbox trees, and
 // for each modify step replays the controller's exact sequential policy to prove
-// the walk lands byte-exact. A guide that passes here parses in the extension and
-// every step will resolve at the keyboard.
+// the walk lands byte-exact. Create steps prove their landing spot too — the
+// runner's placement plan (inside the matching container for a nested symbol,
+// end-of-file for a top-level one) must resolve, or the step fails here instead
+// of at the keyboard. The whole run is a sequential dry-run: each step's outcome
+// is applied to an in-memory copy of the target, so later steps validate against
+// the tree as it will actually stand when they run. A guide that passes here
+// parses in the extension and every step will resolve at the keyboard.
 //
 // usage: node scripts/validate-guide.js <guide.md> <targetRoot> <sandboxRoot>
 // exit 0: every step validates. exit 1: failures (listed). exit 2: bad usage.
@@ -31,7 +36,8 @@ fs.writeFileSync(
     `export { buildReplaySteps } from "../src/disclosure/sequence";\n` +
     `export { resolveStep } from "../src/disclosure/replay";\n` +
     `export { parseRoot } from "../src/disclosure/diff";\n` +
-    `export { languageForFile } from "../src/disclosure/language";\n`,
+    `export { languageForFile } from "../src/disclosure/language";\n` +
+    `export { planCreateInsertion, separatorToInsert } from "../src/disclosure/insertion";\n`,
 );
 esbuild.buildSync({
   entryPoints: [entry],
@@ -41,7 +47,7 @@ esbuild.buildSync({
   platform: "node",
   external: ["tree-sitter", "tree-sitter-rust", "tree-sitter-c-sharp", "tree-sitter-typescript", "tree-sitter-python", "@tree-sitter-grammars/tree-sitter-markdown"],
 });
-const { parseGuide, extractSymbol, stepAlreadyLanded, classifyReplay, buildReplaySteps, resolveStep, parseRoot, languageForFile } =
+const { parseGuide, extractSymbol, stepAlreadyLanded, classifyReplay, buildReplaySteps, resolveStep, parseRoot, languageForFile, planCreateInsertion, separatorToInsert } =
   require(bundle);
 const cleanup = () => {
   fs.rmSync(bundle, { force: true });
@@ -95,9 +101,21 @@ const failures = [];
 const note = (step, status, detail = "") =>
   console.log(`  ${status.padEnd(9)} ${step.id.padEnd(5)} ${step.action.padEnd(11)} ${step.symbol}${detail ? ` — ${detail}` : ""}`);
 
+// The sequential dry-run state: target texts as they stand after the steps
+// validated so far. Reads fall through to disk for untouched files.
+const simulated = new Map();
+const targetTextFor = (rel) => (simulated.has(rel) ? simulated.get(rel) : read(path.join(targetRoot, rel)));
+
+// Land a step's outcome in the dry-run state: the target symbol's bytes become
+// the sandbox's. Splice by offset, not String.replace ($-patterns corrupt code).
+const spliceBytes = (text, from, to) => {
+  const at = text.indexOf(from);
+  return at < 0 ? text : text.slice(0, at) + to + text.slice(at + from.length);
+};
+
 for (const step of guide.steps) {
   const rel = step.file.split(":")[0];
-  const targetText = read(path.join(targetRoot, rel));
+  const targetText = targetTextFor(rel);
   const sandboxText = read(path.join(sandboxRoot, rel));
 
   if (step.action === "create-file") {
@@ -109,6 +127,7 @@ for (const step of guide.steps) {
     } else if (targetText !== undefined) {
       note(step, "CONFLICT", `${rel} exists in the target and differs — replay will block`);
     } else {
+      simulated.set(rel, sandboxText);
       note(step, "ok", `${sandboxText.length} bytes`);
     }
     continue;
@@ -132,7 +151,10 @@ for (const step of guide.steps) {
 
   if (step.action === "delete") {
     if (before === undefined) note(step, "landed", "symbol already gone from the target");
-    else note(step, "ok", "strikes the existing symbol");
+    else {
+      simulated.set(rel, spliceBytes(targetText, before, ""));
+      note(step, "ok", "strikes the existing symbol");
+    }
     continue;
   }
   if (after === undefined) {
@@ -141,9 +163,29 @@ for (const step of guide.steps) {
     continue;
   }
   if (step.action === "create") {
-    if (stepAlreadyLanded("create", before, after)) note(step, "landed", "already byte-identical in the target");
-    else if (before !== undefined) note(step, "ok", "exists in target — resumes as diff-replay");
-    else note(step, "ok", `${after.length} bytes, disclosure walk`);
+    if (stepAlreadyLanded("create", before, after)) {
+      note(step, "landed", "already byte-identical in the target");
+    } else if (before !== undefined) {
+      simulated.set(rel, spliceBytes(targetText, before, after));
+      note(step, "ok", "exists in target — resumes as diff-replay");
+    } else if (targetText === undefined) {
+      failures.push(step.id);
+      note(step, "FAIL", `target file ${rel} unreadable — a symbol create needs an existing file`);
+    } else {
+      // The runner's exact placement decision, against the dry-run target.
+      const placement = planCreateInsertion(targetText, sandboxText, step.symbol, spec);
+      if (placement.kind === "blocked") {
+        failures.push(step.id);
+        note(step, "FAIL", `placement blocked — ${placement.reason}`);
+      } else if (placement.kind === "container") {
+        const scaffolded = targetText.slice(0, placement.start) + placement.scaffold + targetText.slice(placement.end);
+        simulated.set(rel, scaffolded.slice(0, placement.cursorAt) + after + scaffolded.slice(placement.cursorAt));
+        note(step, "ok", `${after.length} bytes, disclosure walk inside \`${placement.container}\``);
+      } else {
+        simulated.set(rel, targetText + separatorToInsert(targetText) + after);
+        note(step, "ok", `${after.length} bytes, disclosure walk at end of file`);
+      }
+    }
     continue;
   }
   // modify
@@ -162,6 +204,7 @@ for (const step of guide.steps) {
     failures.push(step.id);
     note(step, "FAIL", `sequential replay ${seq.failedOp !== undefined ? `collides at op ${seq.failedOp}` : "not byte-exact"} (${seq.ops} ops)`);
   } else {
+    simulated.set(rel, spliceBytes(targetText, before, after));
     note(step, "ok", `${plan.strategy} (survival ${Math.round(plan.survival * 100)}%, ${seq.ops} ops${plan.strategy === "surgical" ? ", sequential byte-exact" : ""})`);
   }
 }

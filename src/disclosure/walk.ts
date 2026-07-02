@@ -145,8 +145,14 @@ export function leadingTriviaStart(src: string, itemStart: number, spec: Languag
 /**
  * Compute the disclosure steps for the first function in `src`.
  * Offsets are relative to the start of `src` (region offset 0).
+ *
+ * `baseIndent` is the column the function's first line starts at — 0 for a
+ * top-level create, the container's child indent for a method disclosed inside
+ * an impl/class. Nested lines and close braces are laid out relative to it, so
+ * the build is byte-exact at depth (the first line itself carries no pad; the
+ * cursor is already at that column).
  */
-export function computeSteps(src: string, spec: LanguageSpec = RUST): Step[] {
+export function computeSteps(src: string, spec: LanguageSpec = RUST, baseIndent = 0): Step[] {
   const root = parserFor(spec).parse(src).rootNode as unknown as SyntaxNode;
   const fn = findFunction(root, spec);
   if (!fn) throw new Error("no function node in source");
@@ -196,7 +202,7 @@ export function computeSteps(src: string, spec: LanguageSpec = RUST): Step[] {
     return cursor + 1 + indent + 1;
   }
 
-  emit(fn, 0, 0, "", "ROOT");
+  emit(fn, 0, baseIndent, "", "ROOT");
 
   // cursorOffset of step i = insertPos of step i+1 (the next insertion point);
   // last step's cursor lands at the end of its own insert.

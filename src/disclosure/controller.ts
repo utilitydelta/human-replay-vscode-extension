@@ -178,7 +178,10 @@ export class DisclosureController {
     retrospective?: Retrospective,
     spec: LanguageSpec = RUST,
   ): Promise<void> {
-    const steps = computeSteps(source, spec);
+    // The cursor column is the symbol's base indent: 0 at end-of-file, the child
+    // indent when the runner parked it inside a container (or a rewrite cleared a
+    // nested method). Seeding the walk with it keeps the build byte-exact at depth.
+    const steps = computeSteps(source, spec, editor.selection.active.character);
     const anchorOffset = editor.document.offsetAt(editor.selection.active);
     this.session = new DisclosureSession(
       editor.document.uri,

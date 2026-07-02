@@ -36,6 +36,11 @@ export interface LanguageSpec {
   /** The block to open for a container node, or null for leaves. `child` may be
    *  a statement wrapper; implementations unwrap as needed. */
   descendable(child: SyntaxNode): { node: SyntaxNode; block: SyntaxNode } | null;
+  /** The body of an item container (impl/class/mod) whose children are named
+   *  items, or null when `node` isn't one. Placement knowledge: a create step
+   *  whose symbol is nested in one of these in the sandbox must land inside the
+   *  matching container in the target, never at end-of-file. */
+  containerBody(node: SyntaxNode): SyntaxNode | null;
   /** Conventional indent the create walk lays blocks out with. The walk assumes
    *  the sandbox follows the language convention; byte-exactness holds when it
    *  does. */
@@ -97,6 +102,17 @@ export const RUST: LanguageSpec = {
         return null;
     }
   },
+  containerBody(node) {
+    const BODIES = new Set(["declaration_list"]);
+    switch (node.type) {
+      case "impl_item":
+      case "trait_item":
+      case "mod_item":
+        return bodyOf(node, ["body"], BODIES);
+      default:
+        return null;
+    }
+  },
 };
 
 const CSHARP_ITEMS = new Set([
@@ -139,6 +155,19 @@ export const CSHARP: LanguageSpec = {
         return null;
     }
   },
+  containerBody(node) {
+    const BODIES = new Set(["declaration_list"]);
+    switch (node.type) {
+      case "class_declaration":
+      case "struct_declaration":
+      case "interface_declaration":
+      case "record_declaration":
+      case "namespace_declaration":
+        return bodyOf(node, ["body"], BODIES);
+      default:
+        return null;
+    }
+  },
 };
 
 const TS_ITEMS = new Set([
@@ -177,6 +206,9 @@ const tsSpec = (id: LanguageId, pick: (m: { typescript: unknown; tsx: unknown })
         return null;
     }
   },
+  containerBody(node) {
+    return node.type === "class_declaration" ? bodyOf(node, ["body"], new Set(["class_body"])) : null;
+  },
 });
 
 export const TYPESCRIPT = tsSpec("typescript", (m) => m.typescript);
@@ -196,6 +228,9 @@ export const PYTHON: LanguageSpec = {
   // not translate. Create steps land whole-symbol.
   functionTypes: new Set(),
   descendable: () => null,
+  containerBody(node) {
+    return node.type === "class_definition" ? bodyOf(node, ["body"], new Set(["block"])) : null;
+  },
 };
 
 export const MARKDOWN: LanguageSpec = {
@@ -220,6 +255,7 @@ export const MARKDOWN: LanguageSpec = {
   isTriviaLine: () => false,
   functionTypes: new Set(),
   descendable: () => null,
+  containerBody: () => null,
 };
 
 function withBlock(node: SyntaxNode, block: SyntaxNode | null): { node: SyntaxNode; block: SyntaxNode } | null {

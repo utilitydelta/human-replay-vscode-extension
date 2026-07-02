@@ -170,6 +170,23 @@ for (const { name, code } of CORPUS) {
   });
 }
 
+// --- baseIndent: byte-exact at container depth -------------------------------
+// A create inside an impl/class parks the cursor at the container's child indent;
+// the walk must lay nested lines and close braces out relative to that column, or
+// the built method's braces land at column 0 (outside-the-impl damage). The input
+// is the symbol as extractSymbol hands it over at depth: first line bare (the
+// cursor supplies its column), continuation lines carrying the file-absolute pad.
+for (const { name, code } of CORPUS) {
+  const atDepth = code
+    .split("\n")
+    .map((l, i) => (i === 0 || l === "" ? l : `    ${l}`))
+    .join("\n");
+  test(`${name}: baseIndent=4 replay rebuilds the nested symbol byte-exact`, () => {
+    const final = replay(computeSteps(atDepth, undefined, 4)).at(-1).buf;
+    assert.strictEqual(final, atDepth, "final buffer must equal the depth-4 source");
+  });
+}
+
 // --- leadingTriviaStart: the symbol owns its doc comments & attributes -------
 // tree-sitter-rust models /// // and #[...] above an item as PRECEDING SIBLINGS,
 // so the item node excludes them. The resolver must extend the start back over the

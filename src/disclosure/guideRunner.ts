@@ -6,7 +6,7 @@ import { DisclosureController } from "./controller";
 import { ReplayOrchestrator } from "./orchestrator";
 import { parseRoot } from "./diff";
 import { findItemByName, leadingTriviaStart, SyntaxNode } from "./walk";
-import { separatorToInsert } from "./insertion";
+import { planCreateInsertion, separatorToInsert } from "./insertion";
 import { ProgramCounter, StepStatus } from "./programCounter";
 import { extractSymbol, stepAlreadyLanded } from "./resume";
 import { LanguageSpec, languageForFile } from "./language";
@@ -23,9 +23,11 @@ export { StepStatus };
 //   delete → strike the old symbol whole (the orchestrator's rewrite strike, empty target)
 //
 // The human should never have to find the spot themselves: a step carries its file
-// (and optionally a `:line`), and the runner brings them there ready to Tab. Create
-// lands the cursor on a fresh separated line at end-of-file; modify/delete land it on
-// the existing symbol. The program counter is the replay's position.
+// (and optionally a `:line`), and the runner brings them there ready to Tab. A create
+// lands where the sandbox says the symbol lives — inside the matching container for a
+// nested symbol (a method in an impl/class), on a fresh separated line at end-of-file
+// for a top-level one. Modify/delete land on the existing symbol. The program counter
+// is the replay's position.
 
 export class GuideRunner {
   private guide: ReplayGuide | undefined;
@@ -197,7 +199,8 @@ export class GuideRunner {
   }
 
   // Open the step's file and place the cursor where the human should Tab. Returns
-  // the editor, or undefined if the file can't be resolved.
+  // the editor, or undefined if the file can't be resolved or the step's landing
+  // spot is blocked (already surfaced to the human).
   private async openTarget(step: ReplayStep): Promise<vscode.TextEditor | undefined> {
     const [rel, lineStr] = step.file.split(":");
     const uris = rel ? await vscode.workspace.findFiles(rel) : [];
@@ -213,6 +216,7 @@ export class GuideRunner {
     const doc = await vscode.workspace.openTextDocument(uris[0]);
     const editor = await vscode.window.showTextDocument(doc, { preview: false });
     const pos = await this.insertionPoint(editor, step, lineStr);
+    if (!pos) return undefined;
     editor.selection = new vscode.Selection(pos, pos);
     editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
     this.output.appendLine(
@@ -224,27 +228,46 @@ export class GuideRunner {
   // Where to land the cursor. An explicit `:line` wins. Otherwise land on the
   // symbol if the target already has it — for modify/delete that's what changes,
   // and for create it means a previous session already started this step (the
-  // resume case; appending at EOF would duplicate it). Fresh creates and missing
-  // symbols fall to a blank-separated line at end-of-file.
+  // resume case; appending at EOF would duplicate it). A fresh create lands where
+  // the sandbox says the symbol lives: inside the matching container for a nested
+  // symbol, end-of-file for a top-level one. A nested symbol whose container isn't
+  // in the target is blocked (undefined) — surfaced, never guessed (invariant 2).
   private async insertionPoint(
     editor: vscode.TextEditor,
     step: ReplayStep,
     lineStr: string | undefined,
-  ): Promise<vscode.Position> {
+  ): Promise<vscode.Position | undefined> {
     const doc = editor.document;
     if (lineStr && /^\d+$/.test(lineStr)) {
       const line = Math.min(Math.max(0, parseInt(lineStr, 10) - 1), Math.max(0, doc.lineCount - 1));
       return new vscode.Position(line, 0);
     }
 
-    {
-      const spec = languageForFile(step.file);
-      if (spec) {
-        const text = doc.getText();
-        const node = findItemByName(parseRoot(text, spec) as unknown as SyntaxNode, text, step.symbol, spec);
-        if (node) return doc.positionAt(leadingTriviaStart(text, node.startIndex, spec));
+    const spec = languageForFile(step.file);
+    if (spec) {
+      const text = doc.getText();
+      const node = findItemByName(parseRoot(text, spec) as unknown as SyntaxNode, text, step.symbol, spec);
+      if (node) return doc.positionAt(leadingTriviaStart(text, node.startIndex, spec));
+
+      if (step.action === "create") {
+        const sandboxText = this.readSandboxFile(step);
+        if (sandboxText !== undefined) {
+          const plan = planCreateInsertion(text, sandboxText, step.symbol, spec);
+          if (plan.kind === "blocked") {
+            vscode.window.showWarningMessage(`Replay Tab: step ${step.id} can't place \`${step.symbol}\`: ${plan.reason}.`);
+            this.output.appendLine(`[guide] step ${step.id}: placement blocked — ${plan.reason}`);
+            return undefined;
+          }
+          if (plan.kind === "container") {
+            this.output.appendLine(`[guide] step ${step.id}: create lands inside \`${plan.container}\``);
+            await editor.edit((b) =>
+              b.replace(new vscode.Range(doc.positionAt(plan.start), doc.positionAt(plan.end)), plan.scaffold),
+            );
+            return doc.positionAt(plan.cursorAt);
+          }
+          // top-level: end-of-file is the symbol's real home
+        }
       }
-      // fall through to end-of-file
     }
 
     // End of file, on a blank line separated from prior content by one empty line.
@@ -254,6 +277,13 @@ export class GuideRunner {
       await editor.edit((b) => b.insert(doc.positionAt(text.length), sep));
     }
     return doc.positionAt(doc.getText().length);
+  }
+
+  // The step's whole sandbox file — the placement side-input for a fresh create.
+  private readSandboxFile(step: ReplayStep): string | undefined {
+    const root = this.sandboxRoot;
+    if (!root) return undefined;
+    return this.readFileFromDisk(path.join(root, step.file.split(":")[0]));
   }
 
   // The bytes a step needs, by symbol. A lean guide carries no fences: `before` is the
