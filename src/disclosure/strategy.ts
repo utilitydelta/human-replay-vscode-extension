@@ -18,6 +18,7 @@
 
 import { SyntaxNode, descendable, findFunction, namedChildren } from "./walk";
 import { diffSymbols, parseRoot } from "./diff";
+import { LanguageSpec, RUST } from "./language";
 
 // Below this fraction of surviving bytes, a surgical replay is more noise than
 // signal — clear and re-disclose. Tunable by feel.
@@ -45,14 +46,14 @@ export interface ReplayPlan {
 // apart they are, not just whether they differ. Descends only into descendable
 // blocks; signature and leaf edits do not change it (the survival ratio catches
 // those).
-function skeletonSeq(src: string): string[] {
-  const fn = findFunction(parseRoot(src));
+function skeletonSeq(src: string, spec: LanguageSpec): string[] {
+  const fn = findFunction(parseRoot(src, spec), spec);
   if (!fn) return [];
   const seq: string[] = [];
   (function walk(node: SyntaxNode): void {
-    const d = descendable(node);
+    const d = descendable(node, spec);
     if (!d) return;
-    seq.push(d.node.type === "function_item" ? "fn" : d.node.type);
+    seq.push(spec.functionTypes.has(d.node.type) ? "fn" : d.node.type);
     for (const c of namedChildren(d.block)) walk(c);
   })(fn);
   return seq;
@@ -75,19 +76,19 @@ function editDistance(a: string[], b: string[]): number {
 }
 
 /** Fraction of the control-flow skeleton that moved between old and new (0..1). */
-function skeletonChangeFraction(oldSrc: string, newSrc: string): number {
-  const a = skeletonSeq(oldSrc);
-  const b = skeletonSeq(newSrc);
+function skeletonChangeFraction(oldSrc: string, newSrc: string, spec: LanguageSpec): number {
+  const a = skeletonSeq(oldSrc, spec);
+  const b = skeletonSeq(newSrc, spec);
   const span = Math.max(a.length, b.length);
   return span === 0 ? 0 : editDistance(a, b) / span;
 }
 
 /** Decide how to replay `diff(old, new)`: surgical edits or clear-and-rewrite. */
-export function classifyReplay(oldSrc: string, newSrc: string): ReplayPlan {
-  const { ops, stable } = diffSymbols(oldSrc, newSrc);
+export function classifyReplay(oldSrc: string, newSrc: string, spec: LanguageSpec = RUST): ReplayPlan {
+  const { ops, stable } = diffSymbols(oldSrc, newSrc, spec);
   const stableBytes = stable.reduce((sum, [a, b]) => sum + (b - a), 0);
   const survival = oldSrc.length ? stableBytes / oldSrc.length : 0;
-  const skeletonChange = skeletonChangeFraction(oldSrc, newSrc);
+  const skeletonChange = skeletonChangeFraction(oldSrc, newSrc, spec);
   const strategy =
     skeletonChange >= SKELETON_FLOOR || survival < SURGICAL_FLOOR ? "rewrite" : "surgical";
   return { survival, hunks: ops.length, skeletonChange, skeletonChanged: skeletonChange > 0, strategy };

@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { buildReplaySteps, asInsertion, ReplayStep } from "./sequence";
 import { resolveStep, shiftWindow } from "./replay";
 import { parseRoot } from "./diff";
+import { LanguageSpec, RUST } from "./language";
 import { revealCursor } from "./reveal";
 import { Retrospective } from "../retrospective/retrospective";
 
@@ -38,6 +39,7 @@ interface Session {
   selfDelta: number;
   steps: ReplayStep[];
   index: number;
+  spec: LanguageSpec;
   retrospective?: Retrospective;
   lastServed?: { range: vscode.Range; text: string };
   // "dramatic" renders the change as a visual diff (old struck red, new ghosted
@@ -141,7 +143,7 @@ export class DiffReplayController {
     if (!s || !step) return { kind: "skip" };
     const surface = this.surfaceOf(step);
     const symText = this.symbolText(document);
-    const root = parseRoot(symText);
+    const root = parseRoot(symText, s.spec);
     const cleanParse = !root.hasError;
     // Arithmetic (baked range + our own accepts' delta, byte-validated) → structural
     // anchor (byte-validated) → unique-substring content match. The arithmetic leg
@@ -192,6 +194,7 @@ export class DiffReplayController {
     retrospective?: Retrospective,
     dramatic = false,
     inPlace = false,
+    spec: LanguageSpec = RUST,
   ): Promise<void> {
     // Demo path: seed the branch's current code so there is something to modify.
     // Real replay (inPlace): the symbol already lives in the workspace at the cursor
@@ -199,8 +202,8 @@ export class DiffReplayController {
     const at = editor.selection.active;
     if (!inPlace) await editor.edit((b) => b.insert(at, oldSrc));
     const anchorOffset = editor.document.offsetAt(at);
-    const steps = buildReplaySteps(oldSrc, newSrc);
-    this.session = { uri: editor.document.uri, anchorOffset, symbolLen: oldSrc.length, selfDelta: 0, steps, index: 0, retrospective, dramatic };
+    const steps = buildReplaySteps(oldSrc, newSrc, spec);
+    this.session = { uri: editor.document.uri, anchorOffset, symbolLen: oldSrc.length, selfDelta: 0, steps, index: 0, retrospective, dramatic, spec };
     this.lastAcceptAt = undefined;
     this.diverged = false;
     this.typing = false;

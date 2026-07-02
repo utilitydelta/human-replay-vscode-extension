@@ -15,8 +15,7 @@
 // else). match arms, closures, if/else, struct literals are leaves: revealed
 // whole. See S1 FINDINGS for why that boundary is correct for the fencing demo.
 
-import Parser = require("tree-sitter");
-import Rust = require("tree-sitter-rust");
+import { LanguageSpec, RUST, parserFor } from "./language";
 
 // Minimal structural view of a tree-sitter node — avoids a hard dep on @types.
 export interface SyntaxNode {
@@ -48,44 +47,13 @@ export interface Step {
   bareText: string;
 }
 
-const INDENT = 4;
 const sp = (n: number) => " ".repeat(n);
 
-let sharedParser: Parser | null = null;
-function parser(): Parser {
-  if (!sharedParser) {
-    sharedParser = new Parser();
-    // tree-sitter-rust ships its own nominal `Language` type; cast across.
-    sharedParser.setLanguage(Rust as unknown as Parser.Language);
-  }
-  return sharedParser;
-}
-
 // A control-flow node we descend into, with the block whose interior we open.
-// Returns null for leaves (emitted whole).
-export function descendable(child: SyntaxNode): { node: SyntaxNode; block: SyntaxNode } | null {
-  // Statements wrap their expression: block -> expression_statement -> for/if/...
-  let node = child;
-  if (child.type === "expression_statement" && child.namedChildCount === 1) {
-    node = child.namedChild(0)!;
-  }
-  switch (node.type) {
-    case "function_item":
-    case "for_expression":
-    case "while_expression":
-    case "loop_expression": {
-      const block = node.childForFieldName("body");
-      return block && block.type === "block" ? { node, block } : null;
-    }
-    case "if_expression": {
-      // if/else can't be modelled by a single open block — reveal it whole.
-      if (node.childForFieldName("alternative")) return null;
-      const block = node.childForFieldName("consequence");
-      return block && block.type === "block" ? { node, block } : null;
-    }
-    default:
-      return null;
-  }
+// Returns null for leaves (emitted whole). Per-language shapes live in the
+// language registry; this delegates.
+export function descendable(child: SyntaxNode, spec: LanguageSpec = RUST): { node: SyntaxNode; block: SyntaxNode } | null {
+  return spec.descendable(child);
 }
 
 export function namedChildren(node: SyntaxNode): SyntaxNode[] {
@@ -94,83 +62,73 @@ export function namedChildren(node: SyntaxNode): SyntaxNode[] {
   return out;
 }
 
-// First function_item in pre-order — the symbol to disclose. Recurses so a fn
-// nested in an impl block is found.
-export function findFunction(node: SyntaxNode): SyntaxNode | null {
-  if (node.type === "function_item") return node;
+// First function-shaped node in pre-order — the symbol to disclose. Recurses so
+// a method nested in an impl/class is found.
+export function findFunction(node: SyntaxNode, spec: LanguageSpec = RUST): SyntaxNode | null {
+  if (spec.functionTypes.has(node.type)) return node;
   for (const c of namedChildren(node)) {
-    const f = findFunction(c);
+    const f = findFunction(c, spec);
     if (f) return f;
   }
   return null;
 }
 
-// The function_item named `name`, in pre-order — where a modify/delete step's
-// symbol already lives, so the guide runner can park the cursor on it. `src` is
-// the buffer the node indexes into (to read the name field).
-export function findFunctionByName(node: SyntaxNode, src: string, name: string): SyntaxNode | null {
-  if (node.type === "function_item") {
-    const id = node.childForFieldName("name");
-    if (id && src.slice(id.startIndex, id.endIndex) === name) return node;
-  }
+// The function named `name`, in pre-order — where a modify/delete step's symbol
+// already lives, so the guide runner can park the cursor on it. `src` is the
+// buffer the node indexes into (to read the name field).
+export function findFunctionByName(node: SyntaxNode, src: string, name: string, spec: LanguageSpec = RUST): SyntaxNode | null {
+  if (spec.functionTypes.has(node.type) && spec.nameOf(node, src) === name) return node;
   for (const c of namedChildren(node)) {
-    const f = findFunctionByName(c, src, name);
+    const f = findFunctionByName(c, src, name, spec);
     if (f) return f;
   }
   return null;
 }
 
-// Any named Rust item the replay can address by name — not just functions. The diff
-// engine is kind-agnostic (it tree-diffs whatever bytes it's handed), so the only
-// reason replay was fn-only was this resolver. A struct/enum/const/trait/type alias/
-// static/macro/module is just as addressable; methods are `function_item` inside an
-// impl, found here too. An impl block has no name field, so it isn't addressable by
-// name (its methods are). First match wins — a name reused across items resolves to
-// the first (the same caveat as functions; the guide should disambiguate).
-const NAMED_ITEM_TYPES = new Set([
-  "function_item",
-  "struct_item",
-  "enum_item",
-  "union_item",
-  "const_item",
-  "static_item",
-  "type_item",
-  "trait_item",
-  "mod_item",
-  "macro_definition",
-]);
+// Any named item the replay can address by name — not just functions. The diff
+// engine is kind-agnostic (it tree-diffs whatever bytes it's handed); which node
+// types are addressable and how their name reads is the language's call
+// (language.ts). First match wins — a name reused across items resolves to the
+// first (the guide should disambiguate). When the item sits inside a wrapper the
+// language says belongs to it (export_statement, decorated_definition), the
+// wrapper is returned so those bytes travel with the symbol.
+export function findItemByName(node: SyntaxNode, src: string, name: string, spec: LanguageSpec = RUST): SyntaxNode | null {
+  const hit = findItem(node, src, name, spec, null);
+  return hit;
+}
 
-export function findItemByName(node: SyntaxNode, src: string, name: string): SyntaxNode | null {
-  if (NAMED_ITEM_TYPES.has(node.type)) {
-    const id = node.childForFieldName("name");
-    if (id && src.slice(id.startIndex, id.endIndex) === name) return node;
+function findItem(
+  node: SyntaxNode,
+  src: string,
+  name: string,
+  spec: LanguageSpec,
+  liftableAncestor: SyntaxNode | null,
+): SyntaxNode | null {
+  if (spec.namedItemTypes.has(node.type) && spec.nameOf(node, src) === name) {
+    return liftableAncestor ?? node;
   }
   for (const c of namedChildren(node)) {
-    const f = findItemByName(c, src, name);
+    // A lift wrapper only counts when it directly wraps the item (possibly via
+    // nested wrappers), so unrelated ancestors never inflate the symbol.
+    const lift = spec.liftParents.has(node.type) ? (liftableAncestor ?? node) : null;
+    const f = findItem(c, src, name, spec, lift);
     if (f) return f;
   }
   return null;
 }
 
 // Extend an item's start back over the doc comments and attributes attached above
-// it. tree-sitter-rust models outer doc comments (/// //! //) and attributes (#[...])
-// as PRECEDING SIBLINGS, not children, so the item node excludes them — and a change
-// confined to the comment (a rewrite of the fn's doc) would be invisible to the diff.
-// Scan the source upward line by line from the item, absorbing contiguous comment /
-// attribute lines, stopping at a blank line (detached) or any code line. Block
-// comments are matched by their `/*`…`*/`/`*` line shapes. Line-based so it needs no
-// sibling API on the minimal SyntaxNode view.
-export function leadingTriviaStart(src: string, itemStart: number): number {
+// it. Grammars model outer doc comments and attributes as PRECEDING SIBLINGS, not
+// children, so the item node excludes them — and a change confined to the comment
+// (a rewrite of the fn's doc) would be invisible to the diff. Scan the source
+// upward line by line from the item, absorbing contiguous trivia lines (the
+// language says what counts), stopping at a blank line (detached) or any code
+// line. Line-based so it needs no sibling API on the minimal SyntaxNode view.
+export function leadingTriviaStart(src: string, itemStart: number, spec: LanguageSpec = RUST): number {
   const isTrivia = (line: string): boolean => {
     const t = line.trim();
     if (t === "") return false; // blank line → the comment block is detached
-    return (
-      t.startsWith("//") || // /// //! and plain //
-      t.startsWith("#[") ||
-      t.startsWith("#![") ||
-      t.startsWith("/*") ||
-      t.startsWith("*") // block-comment continuation / close line
-    );
+    return spec.isTriviaLine(t);
   };
   let result = itemStart;
   let lineStart = src.lastIndexOf("\n", itemStart - 1) + 1; // start of the item's own line
@@ -188,10 +146,10 @@ export function leadingTriviaStart(src: string, itemStart: number): number {
  * Compute the disclosure steps for the first function in `src`.
  * Offsets are relative to the start of `src` (region offset 0).
  */
-export function computeSteps(src: string): Step[] {
-  const root = parser().parse(src).rootNode as unknown as SyntaxNode;
-  const fn = findFunction(root);
-  if (!fn) throw new Error("no function_item in source");
+export function computeSteps(src: string, spec: LanguageSpec = RUST): Step[] {
+  const root = parserFor(spec).parse(src).rootNode as unknown as SyntaxNode;
+  const fn = findFunction(root, spec);
+  if (!fn) throw new Error("no function node in source");
 
   // Raw emissions in pre-order: text and the cursor it is inserted at, in the
   // coordinates of the buffer as it exists at that moment. Built by splicing a
@@ -208,7 +166,7 @@ export function computeSteps(src: string): Step[] {
   // header of the container this node lands in (for re-anchored recovery). Returns
   // the position immediately after this node's full skeleton.
   function emit(node: SyntaxNode, pos: number, indent: number, lead: string, parentKey: string): number {
-    const d = descendable(node);
+    const d = descendable(node, spec);
     if (!d) {
       const bareText = src.slice(node.startIndex, node.endIndex);
       const text = lead + bareText;
@@ -217,7 +175,7 @@ export function computeSteps(src: string): Step[] {
       return pos + text.length;
     }
     const header = src.slice(d.node.startIndex, d.block.startIndex + 1); // ends with `{`
-    const inner = indent + INDENT;
+    const inner = indent + spec.indentWidth;
     const body = lead + header + "\n" + sp(inner) + "\n" + sp(indent) + "}";
     splice(pos, body);
     // The recovery shell (no baked lead/blank line): `header {\n}`.

@@ -30,7 +30,8 @@ fs.writeFileSync(
     `export { classifyReplay } from "../src/disclosure/strategy";\n` +
     `export { buildReplaySteps } from "../src/disclosure/sequence";\n` +
     `export { resolveStep } from "../src/disclosure/replay";\n` +
-    `export { parseRoot } from "../src/disclosure/diff";\n`,
+    `export { parseRoot } from "../src/disclosure/diff";\n` +
+    `export { languageForFile } from "../src/disclosure/language";\n`,
 );
 esbuild.buildSync({
   entryPoints: [entry],
@@ -38,9 +39,9 @@ esbuild.buildSync({
   outfile: bundle,
   format: "cjs",
   platform: "node",
-  external: ["tree-sitter", "tree-sitter-rust"],
+  external: ["tree-sitter", "tree-sitter-rust", "tree-sitter-c-sharp", "tree-sitter-typescript", "tree-sitter-python", "@tree-sitter-grammars/tree-sitter-markdown"],
 });
-const { parseGuide, extractSymbol, stepAlreadyLanded, classifyReplay, buildReplaySteps, resolveStep, parseRoot } =
+const { parseGuide, extractSymbol, stepAlreadyLanded, classifyReplay, buildReplaySteps, resolveStep, parseRoot, languageForFile } =
   require(bundle);
 const cleanup = () => {
   fs.rmSync(bundle, { force: true });
@@ -67,12 +68,12 @@ const countDefs = (text, name) => {
 // The controller's exact interactive loop: arithmetic-first resolveStep with
 // selfDelta bookkeeping. Proves every op of a modify step resolves and the walk
 // lands byte-exact — the same invariant the sequential-replay oracles pin.
-const sequentialReplay = (before, after) => {
-  const steps = buildReplaySteps(before, after);
+const sequentialReplay = (before, after, spec) => {
+  const steps = buildReplaySteps(before, after, spec);
   let buf = before;
   let delta = 0;
   for (const [i, st] of steps.entries()) {
-    const r = resolveStep(buf, parseRoot(buf), st, delta);
+    const r = resolveStep(buf, parseRoot(buf, spec), st, delta);
     if (!r) return { ok: false, ops: steps.length, failedOp: i };
     buf = buf.slice(0, r[0]) + st.replacement + buf.slice(r[1]);
     delta += st.replacement.length - (r[1] - r[0]);
@@ -113,8 +114,14 @@ for (const step of guide.steps) {
     continue;
   }
 
-  const before = step.before ?? (targetText === undefined ? undefined : extractSymbol(targetText, step.symbol));
-  const after = step.after ?? (sandboxText === undefined ? undefined : extractSymbol(sandboxText, step.symbol));
+  const spec = languageForFile(rel);
+  if (!spec) {
+    failures.push(step.id);
+    note(step, "FAIL", `no language support for ${rel} — route to Manual steps or Create File`);
+    continue;
+  }
+  const before = step.before ?? (targetText === undefined ? undefined : extractSymbol(targetText, step.symbol, spec));
+  const after = step.after ?? (sandboxText === undefined ? undefined : extractSymbol(sandboxText, step.symbol, spec));
   const dupT = countDefs(targetText, step.symbol);
   const dupS = countDefs(sandboxText, step.symbol);
   if (dupT > 1 || dupS > 1) {
@@ -149,8 +156,8 @@ for (const step of guide.steps) {
     note(step, "landed", "already byte-identical in the target");
     continue;
   }
-  const plan = classifyReplay(before, after);
-  const seq = sequentialReplay(before, after);
+  const plan = classifyReplay(before, after, spec);
+  const seq = sequentialReplay(before, after, spec);
   if (plan.strategy === "surgical" && !seq.ok) {
     failures.push(step.id);
     note(step, "FAIL", `sequential replay ${seq.failedOp !== undefined ? `collides at op ${seq.failedOp}` : "not byte-exact"} (${seq.ops} ops)`);

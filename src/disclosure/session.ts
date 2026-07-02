@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { Step } from "./walk";
+import { LanguageSpec, RUST } from "./language";
 import { Retrospective } from "../retrospective/retrospective";
 
 // One disclosure in flight: the step list, a program counter, and the anchor —
@@ -19,6 +20,7 @@ export class DisclosureSession {
     readonly steps: Step[],
     readonly sourceLength: number,
     readonly retrospective?: Retrospective,
+    readonly spec: LanguageSpec = RUST,
   ) {}
 
   current(): Step | undefined {

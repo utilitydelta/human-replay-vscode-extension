@@ -16,8 +16,7 @@
 // hiding in anonymous tokens (the `<` -> `<=` operator, whose named children are
 // unchanged) by falling back to replace-whole. Correctness over minimality.
 
-import Parser = require("tree-sitter");
-import Rust = require("tree-sitter-rust");
+import { LanguageSpec, RUST, parserFor } from "./language";
 import { SyntaxNode } from "./walk";
 
 export type OpKind = "insert" | "delete" | "replace";
@@ -69,14 +68,6 @@ export interface Diff {
   moved: [number, number][];
 }
 
-let sharedParser: Parser | null = null;
-function parser(): Parser {
-  if (!sharedParser) {
-    sharedParser = new Parser();
-    sharedParser.setLanguage(Rust as unknown as Parser.Language);
-  }
-  return sharedParser;
-}
 
 const named = (node: SyntaxNode): SyntaxNode[] => {
   const out: SyntaxNode[] = [];
@@ -256,9 +247,9 @@ function editsFor(
  * Diff the first item subtree of `oldSrc` against `newSrc`. Returns the edit
  * script in OLD-source coordinates plus the stable and moved ranges.
  */
-export function diffSymbols(oldSrc: string, newSrc: string): Diff {
-  const o = parseRoot(oldSrc);
-  const n = parseRoot(newSrc);
+export function diffSymbols(oldSrc: string, newSrc: string, spec: LanguageSpec = RUST): Diff {
+  const o = parseRoot(oldSrc, spec);
+  const n = parseRoot(newSrc, spec);
   const stable: [number, number][] = [];
   const moved: [number, number][] = [];
   const ops = editsFor(o, n, oldSrc, newSrc, [], stable, moved);
@@ -266,6 +257,6 @@ export function diffSymbols(oldSrc: string, newSrc: string): Diff {
 }
 
 /** Parse `src` to its root node — the shared entry for diff and live re-anchor. */
-export function parseRoot(src: string): SyntaxNode {
-  return parser().parse(src).rootNode as unknown as SyntaxNode;
+export function parseRoot(src: string, spec: LanguageSpec = RUST): SyntaxNode {
+  return parserFor(spec).parse(src).rootNode as unknown as SyntaxNode;
 }

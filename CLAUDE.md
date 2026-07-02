@@ -34,9 +34,14 @@ A change that violates one of these is drift, not a feature.
 - `npm test` (node:test, esbuild-bundled oracles in `test/*.test.cjs`) stays
   green; `npm run typecheck` and `npm run build` stay clean. Commit each green
   increment; work lands on `main`.
-- Native `tree-sitter` is externalized in every esbuild call (the extension
-  bundle, every test bundle, `scripts/validate-guide.js`). Adding a grammar
-  means adding it to every externals list. Wasm is for `.vsix` packaging only.
+- Languages: Rust, C#, TypeScript/JavaScript (tsx/jsx included), Python, and
+  Markdown (items are heading sections). All per-language knowledge lives in
+  `src/disclosure/language.ts`; the rest of the engine is language-agnostic.
+  Python and Markdown have no create walk — creates land whole-symbol.
+- Native `tree-sitter` + every grammar is externalized in every esbuild call
+  (the extension bundle, every test bundle, `scripts/validate-guide.js`).
+  Adding a grammar means adding it to every externals list. Wasm is for
+  `.vsix` packaging only.
 - A code path isn't finished when it compiles; it's finished when it emits
   evidence — a green oracle, or a span in the "Replay Tab" output channel.
   Every engine decision already logs there (`[guide]`, `[replay]`,

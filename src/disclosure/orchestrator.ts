@@ -4,6 +4,7 @@ import { DisclosureController } from "./controller";
 import { DiffReplayController } from "./diffReplayController";
 import { revealCursor } from "./reveal";
 import { Retrospective } from "../retrospective/retrospective";
+import { LanguageSpec, RUST } from "./language";
 
 // Routes a changed symbol to the right replay engine. The classifier reads the
 // AST (survival ratio + control-flow skeleton change) and decides: a light touch
@@ -16,7 +17,7 @@ const REWRITE_CONTEXT = "replayTab.rewriteStrikeActive";
 
 export class ReplayOrchestrator {
   private readonly strike: vscode.TextEditorDecorationType;
-  private pending: { editor: vscode.TextEditor; range: vscode.Range; newSrc: string; retro?: Retrospective } | undefined;
+  private pending: { editor: vscode.TextEditor; range: vscode.Range; newSrc: string; retro?: Retrospective; spec: LanguageSpec } | undefined;
 
   constructor(
     private readonly output: vscode.OutputChannel,
@@ -29,23 +30,28 @@ export class ReplayOrchestrator {
     });
   }
 
-  async start(editor: vscode.TextEditor, oldSrc: string, newSrc: string, retro?: Retrospective, inPlace = false): Promise<void> {
-    const plan = classifyReplay(oldSrc, newSrc);
+  async start(editor: vscode.TextEditor, oldSrc: string, newSrc: string, retro?: Retrospective, inPlace = false, spec: LanguageSpec = RUST): Promise<void> {
+    const plan = classifyReplay(oldSrc, newSrc, spec);
     this.output.appendLine(
       `[replay] strategy=${plan.strategy} survival=${Math.round(plan.survival * 100)}% ` +
         `skeletonChange=${Math.round(plan.skeletonChange * 100)}% hunks=${plan.hunks}`,
     );
-    if (plan.strategy === "surgical") {
-      await this.diffReplay.start(editor, oldSrc, newSrc, retro, true, inPlace);
+    // A rewrite normally strikes the old symbol whole and descend-and-fills the
+    // new one — a walk only brace languages support. Elsewhere (python, markdown)
+    // the same gesture rides diff-replay's block surface: strike, preview, Tab
+    // applies the whole block. Same ground truth, no walk.
+    if (plan.strategy === "surgical" || spec.functionTypes.size === 0) {
+      if (plan.strategy !== "surgical") this.output.appendLine("[replay] rewrite via block swap (no walk for this language)");
+      await this.diffReplay.start(editor, oldSrc, newSrc, retro, true, inPlace, spec);
       return;
     }
-    await this.startRewrite(editor, oldSrc, newSrc, retro, inPlace);
+    await this.startRewrite(editor, oldSrc, newSrc, retro, inPlace, spec);
   }
 
   // Strike the old symbol whole (red) and arm the Tab-to-clear gesture. Demo path
   // seeds the symbol first; the real replay (inPlace) strikes the one already in the
   // workspace at the cursor (oldSrc was resolved from it).
-  private async startRewrite(editor: vscode.TextEditor, oldSrc: string, newSrc: string, retro?: Retrospective, inPlace = false): Promise<void> {
+  private async startRewrite(editor: vscode.TextEditor, oldSrc: string, newSrc: string, retro?: Retrospective, inPlace = false, spec: LanguageSpec = RUST): Promise<void> {
     const at = editor.selection.active;
     if (!inPlace) await editor.edit((b) => b.insert(at, oldSrc));
     const range = new vscode.Range(at, editor.document.positionAt(editor.document.offsetAt(at) + oldSrc.length));
@@ -55,7 +61,7 @@ export class ReplayOrchestrator {
         renderOptions: { after: { contentText: "  ⟶  rewritten — Tab to clear and re-disclose", color: "#3fb950", fontStyle: "italic" } },
       },
     ]);
-    this.pending = { editor, range, newSrc, retro };
+    this.pending = { editor, range, newSrc, retro, spec };
     editor.selection = new vscode.Selection(at, at);
     void vscode.commands.executeCommand("setContext", REWRITE_CONTEXT, true);
     this.output.appendLine("[replay] rewrite: struck old symbol, awaiting clear");
@@ -78,7 +84,7 @@ export class ReplayOrchestrator {
       return;
     }
     this.output.appendLine("[replay] rewrite: cleared old symbol, disclosing new");
-    await this.disclosure.start(p.editor, p.newSrc, p.retro);
+    await this.disclosure.start(p.editor, p.newSrc, p.retro, p.spec);
   }
 
   cancel(): void {

@@ -4,6 +4,7 @@ import { DisclosureSession } from "./session";
 import { appendEdit, innermostContainerKey } from "./anchoredInsert";
 import { buildRecoveryGhost } from "./recoveryGhost";
 import { parseRoot } from "./diff";
+import { LanguageSpec, RUST } from "./language";
 import { revealCursor } from "./reveal";
 import { Retrospective } from "../retrospective/retrospective";
 
@@ -153,7 +154,7 @@ export class DisclosureController {
     // ghost is meant to show; this guard declines any stray query in the brief window
     // before that move, so the node never renders in the wrong block.
     const symbolText = this.extractSymbol(document);
-    if (symbolText !== undefined && innermostContainerKey(symbolText, at - s.anchorOffset) !== step.parentKey) {
+    if (symbolText !== undefined && innermostContainerKey(symbolText, at - s.anchorOffset, s.spec) !== step.parentKey) {
       return undefined;
     }
 
@@ -175,8 +176,9 @@ export class DisclosureController {
     editor: vscode.TextEditor,
     source: string,
     retrospective?: Retrospective,
+    spec: LanguageSpec = RUST,
   ): Promise<void> {
-    const steps = computeSteps(source);
+    const steps = computeSteps(source, spec);
     const anchorOffset = editor.document.offsetAt(editor.selection.active);
     this.session = new DisclosureSession(
       editor.document.uri,
@@ -184,6 +186,7 @@ export class DisclosureController {
       steps,
       source.length,
       retrospective,
+      spec,
     );
     this.lastAcceptAt = undefined;
     this.lastOffered = undefined;
@@ -350,11 +353,11 @@ export class DisclosureController {
     const symbolText = this.extractSymbol(editor.document);
     if (symbolText !== undefined) {
       const cursorRel = editor.document.offsetAt(editor.selection.active) - s.anchorOffset;
-      if (innermostContainerKey(symbolText, cursorRel) !== step.parentKey) {
+      if (innermostContainerKey(symbolText, cursorRel, s.spec) !== step.parentKey) {
         // Climb-out: the cursor is nested deeper than this node's parent. Drop it to the
         // append frontier of the parent container; the resulting selection change re-
         // offers, now in the right container, and the inline ghost renders there.
-        const edit = appendEdit(symbolText, step.parentKey, step.bareText);
+        const edit = appendEdit(symbolText, step.parentKey, step.bareText, s.spec);
         if (edit) {
           const frontier = editor.document.positionAt(s.anchorOffset + edit.start);
           if (!editor.selection.active.isEqual(frontier)) {
@@ -378,7 +381,7 @@ export class DisclosureController {
   private extractSymbol(document: vscode.TextDocument): string | undefined {
     if (!this.session) return undefined;
     const tail = document.getText().slice(this.session.anchorOffset);
-    const fn = findFunction(parseRoot(tail));
+    const fn = findFunction(parseRoot(tail, this.session.spec), this.session.spec);
     return fn ? tail.slice(0, fn.endIndex) : undefined;
   }
 
@@ -395,7 +398,7 @@ export class DisclosureController {
     this.clearSettle();
     this.recoverySettled = true; // an explicit Tab — the next ghost may show at once
     const symbolText = this.extractSymbol(editor.document);
-    const edit = symbolText !== undefined ? appendEdit(symbolText, step.parentKey, step.bareText) : null;
+    const edit = symbolText !== undefined ? appendEdit(symbolText, step.parentKey, step.bareText, s.spec) : null;
     if (!edit) {
       await this.surfaceCollision();
       return;

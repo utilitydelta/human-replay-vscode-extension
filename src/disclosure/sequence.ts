@@ -9,6 +9,7 @@
 // layer. Model-free, like the rest of disclosure.
 
 import { diffSymbols, EditOp } from "./diff";
+import { LanguageSpec } from "./language";
 
 export interface ReplayStep extends EditOp {
   /**
@@ -49,8 +50,8 @@ export function asInsertion(oldText: string, replacement: string): { atEnd: bool
 }
 
 /** Ordered, surface-classified replay steps for `diff(old, new)`. */
-export function buildReplaySteps(oldSrc: string, newSrc: string): ReplayStep[] {
-  const { ops } = diffSymbols(oldSrc, newSrc);
+export function buildReplaySteps(oldSrc: string, newSrc: string, spec?: LanguageSpec): ReplayStep[] {
+  const { ops } = diffSymbols(oldSrc, newSrc, spec);
   return ops
     .map((op) => ({ ...op, singleLine: isSingleLine(oldSrc, op), originalText: oldSrc.slice(op.start, op.end) }))
     .sort((a, b) => a.start - b.start || a.end - b.end);

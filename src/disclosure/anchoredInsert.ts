@@ -14,8 +14,7 @@
 
 import { SyntaxNode, descendable, findFunction, namedChildren } from "./walk";
 import { parseRoot } from "./diff";
-
-const INDENT = 4;
+import { LanguageSpec, RUST } from "./language";
 
 const unwrap = (n: SyntaxNode): SyntaxNode =>
   n.type === "expression_statement" && n.namedChildCount === 1 ? n.namedChild(0)! : n;
@@ -28,14 +27,14 @@ function colOf(src: string, i: number): number {
 }
 
 // The container node whose header text matches `key` ("ROOT" = the function).
-function findContainer(symbolText: string, key: string): SyntaxNode | null {
-  const root = parseRoot(symbolText);
-  if (key === "ROOT") return findFunction(root);
+function findContainer(symbolText: string, key: string, spec: LanguageSpec): SyntaxNode | null {
+  const root = parseRoot(symbolText, spec);
+  if (key === "ROOT") return findFunction(root, spec);
   let found: SyntaxNode | null = null;
   (function scan(node: SyntaxNode): void {
     if (found) return;
     const u = unwrap(node);
-    const d = descendable(u);
+    const d = descendable(u, spec);
     // Compare the candidate's FULL header (start → its block), not a length-prefix —
     // otherwise `if foo` would match `if foobar`. Duplicate identical sibling headers
     // resolve to the first (a known limit; the planned tree usually disambiguates).
@@ -59,13 +58,13 @@ function findContainer(symbolText: string, key: string): SyntaxNode | null {
  * on a mismatch, declines the cursor-insert so `appendEdit` places it structurally.
  * Null when the cursor is in no container (or nothing is built yet).
  */
-export function innermostContainerKey(symbolText: string, offset: number): string | null {
-  const root = parseRoot(symbolText);
+export function innermostContainerKey(symbolText: string, offset: number, spec: LanguageSpec = RUST): string | null {
+  const root = parseRoot(symbolText, spec);
   let key: string | null = null;
   let bestSpan = Infinity;
   (function scan(node: SyntaxNode): void {
     const u = unwrap(node);
-    const d = descendable(u);
+    const d = descendable(u, spec);
     if (d && offset > d.block.startIndex && offset < d.block.endIndex) {
       const span = d.block.endIndex - d.block.startIndex;
       if (span < bestSpan) {
@@ -90,14 +89,14 @@ export interface AppendEdit {
  * identified by `parentKey`, in `symbolText` coordinates. Returns null when the
  * parent can't be found (collision — the caller must surface, never guess).
  */
-export function appendEdit(symbolText: string, parentKey: string, nodeText: string): AppendEdit | null {
-  const container = findContainer(symbolText, parentKey);
+export function appendEdit(symbolText: string, parentKey: string, nodeText: string, spec: LanguageSpec = RUST): AppendEdit | null {
+  const container = findContainer(symbolText, parentKey, spec);
   if (!container) return null;
-  const d = descendable(container);
+  const d = descendable(container, spec);
   if (!d) return null;
   const block = d.block;
   const close = block.endIndex - 1; // the `}`
-  const childIndent = colOf(symbolText, container.startIndex) + INDENT;
+  const childIndent = colOf(symbolText, container.startIndex) + spec.indentWidth;
   const closeIndent = colOf(symbolText, container.startIndex);
 
   // Drop all whitespace before the close brace (a baked blank line, double blanks,

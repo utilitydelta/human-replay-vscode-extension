@@ -9,6 +9,7 @@ import { findItemByName, leadingTriviaStart, SyntaxNode } from "./walk";
 import { separatorToInsert } from "./insertion";
 import { ProgramCounter, StepStatus } from "./programCounter";
 import { extractSymbol, stepAlreadyLanded } from "./resume";
+import { LanguageSpec, languageForFile } from "./language";
 
 export { StepStatus };
 
@@ -154,11 +155,14 @@ export class GuideRunner {
     this.steps.forEach((step, i) => {
       if (this.pc.status(i) === "done" || this.pc.status(i) === "skipped") return;
       const rel = step.file.split(":")[0];
-      // A whole-file step compares whole files; symbol steps compare the named item.
+      // A whole-file step compares whole files; symbol steps compare the named
+      // item in the file's language. No language, no verdict (fail closed).
+      const spec = languageForFile(rel);
+      if (step.action !== "create-file" && !spec) return;
       const read = (root: string) =>
         step.action === "create-file"
           ? this.readFileFromDisk(path.join(root, rel))
-          : this.readSymbolFromDisk(path.join(root, rel), step.symbol);
+          : this.readSymbolFromDisk(path.join(root, rel), step.symbol, spec!);
       const target = read(workspaceRoot);
       const after = sandbox ? read(sandbox) : undefined;
       if (stepAlreadyLanded(step.action, target, after)) {
@@ -171,9 +175,9 @@ export class GuideRunner {
     return landed;
   }
 
-  private readSymbolFromDisk(file: string, symbol: string): string | undefined {
+  private readSymbolFromDisk(file: string, symbol: string, spec: LanguageSpec): string | undefined {
     try {
-      return extractSymbol(fs.readFileSync(file, "utf8"), symbol);
+      return extractSymbol(fs.readFileSync(file, "utf8"), symbol, spec);
     } catch {
       return undefined;
     }
@@ -234,9 +238,12 @@ export class GuideRunner {
     }
 
     {
-      const text = doc.getText();
-      const node = findItemByName(parseRoot(text) as unknown as SyntaxNode, text, step.symbol);
-      if (node) return doc.positionAt(leadingTriviaStart(text, node.startIndex));
+      const spec = languageForFile(step.file);
+      if (spec) {
+        const text = doc.getText();
+        const node = findItemByName(parseRoot(text, spec) as unknown as SyntaxNode, text, step.symbol, spec);
+        if (node) return doc.positionAt(leadingTriviaStart(text, node.startIndex, spec));
+      }
       // fall through to end-of-file
     }
 
@@ -254,28 +261,28 @@ export class GuideRunner {
   // the symbol in the sandbox (the desired end state). Embedded fences, if present, win
   // — a self-contained guide still replays. Returns undefined bytes when unresolvable;
   // the caller reports it. Both come from real files, so ground truth holds (invariant 1).
-  private resolveStepBytes(editor: vscode.TextEditor, step: ReplayStep): { before?: string; after?: string } {
+  private resolveStepBytes(editor: vscode.TextEditor, step: ReplayStep, spec: LanguageSpec): { before?: string; after?: string } {
     const before =
       step.action === "create"
         ? undefined
-        : step.before ?? this.symbolFrom(editor.document.getText(), step.symbol);
+        : step.before ?? this.symbolFrom(editor.document.getText(), step.symbol, spec);
     const after =
       step.action === "delete"
         ? undefined
-        : step.after ?? this.readSandboxSymbol(step);
+        : step.after ?? this.readSandboxSymbol(step, spec);
     return { before, after };
   }
 
   // Extract a named item's exact bytes from `text` by name — fn, struct, enum, const,
   // trait, type alias, static, macro, module (model-free, tree-sitter).
-  private symbolFrom(text: string, symbol: string): string | undefined {
-    return extractSymbol(text, symbol);
+  private symbolFrom(text: string, symbol: string, spec: LanguageSpec): string | undefined {
+    return extractSymbol(text, symbol, spec);
   }
 
   // Read the step's symbol from the sandbox tree (the session's picked sandbox,
   // else config `replayTab.sandboxRoot`, + the step's file path) — the source
   // of the `after` bytes for a lean guide.
-  private readSandboxSymbol(step: ReplayStep): string | undefined {
+  private readSandboxSymbol(step: ReplayStep, spec: LanguageSpec): string | undefined {
     const root = this.sandboxRoot;
     if (!root) {
       this.output.appendLine(`[guide] step ${step.id}: no sandbox picked and no replayTab.sandboxRoot set — can't resolve After bytes`);
@@ -284,7 +291,7 @@ export class GuideRunner {
     const rel = step.file.split(":")[0];
     const full = path.join(root, rel);
     try {
-      return this.symbolFrom(fs.readFileSync(full, "utf8"), step.symbol);
+      return this.symbolFrom(fs.readFileSync(full, "utf8"), step.symbol, spec);
     } catch {
       this.output.appendLine(`[guide] step ${step.id}: failed to read sandbox file ${full}`);
       return undefined;
@@ -353,12 +360,20 @@ export class GuideRunner {
       return;
     }
     if (step.action === "create-file") {
-      await this.runCreateFile(index, step);
+      await this.runCreateFile(index, step); // whole-file bytes — no language needed
+      return;
+    }
+    const spec = languageForFile(step.file);
+    if (!spec) {
+      vscode.window.showWarningMessage(
+        `Replay Tab: step ${step.id} targets ${step.file} — no language support for that extension. Route it to a Manual step or Create File.`,
+      );
+      this.output.appendLine(`[guide] step ${step.id}: unsupported language for ${step.file}`);
       return;
     }
     const editor = await this.openTarget(step);
     if (!editor) return;
-    const { before, after } = this.resolveStepBytes(editor, step);
+    const { before, after } = this.resolveStepBytes(editor, step, spec);
 
     // A step can't run without the bytes its action drives. Resolution fails when the
     // sandbox root isn't set, the file isn't there, or the symbol isn't a function the
@@ -386,22 +401,28 @@ export class GuideRunner {
         // A create whose symbol is already (partially) in the target is a resumed
         // step — diff-replay the live bytes toward the sandbox instead of walking
         // a duplicate in at end-of-file.
-        const existing = this.symbolFrom(editor.document.getText(), step.symbol);
+        const existing = this.symbolFrom(editor.document.getText(), step.symbol, spec);
         if (existing !== undefined) {
           this.output.appendLine(`[guide] step ${step.id}: ${step.symbol} already in target — resuming as diff-replay`);
-          await this.orchestrator.start(editor, existing, after!, step.retro, true);
+          await this.orchestrator.start(editor, existing, after!, step.retro, true, spec);
+        } else if (spec.functionTypes.size === 0) {
+          // No create walk for this language — the whole symbol lands as one
+          // block ghost at the parked cursor (real sandbox bytes, one Tab). The
+          // orchestrator's no-walk guard routes this to the block-swap surface.
+          this.output.appendLine(`[guide] step ${step.id}: ${spec.id} has no walk — whole-symbol insert`);
+          await this.orchestrator.start(editor, "", after!, step.retro, true, spec);
         } else {
-          await this.disclosure.start(editor, after!, step.retro);
+          await this.disclosure.start(editor, after!, step.retro, spec);
         }
         break;
       }
       case "modify":
         // In-place: the symbol already lives in the workspace at the parked cursor.
-        await this.orchestrator.start(editor, before!, after!, step.retro, true);
+        await this.orchestrator.start(editor, before!, after!, step.retro, true, spec);
         break;
       case "delete":
         // Strike the existing symbol whole and clear to nothing — in-place.
-        await this.orchestrator.start(editor, before!, "", step.retro, true);
+        await this.orchestrator.start(editor, before!, "", step.retro, true, spec);
         break;
     }
   }

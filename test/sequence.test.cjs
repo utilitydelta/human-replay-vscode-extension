@@ -25,7 +25,7 @@ esbuild.buildSync({
   outfile: bundle,
   format: "cjs",
   platform: "node",
-  external: ["tree-sitter", "tree-sitter-rust"],
+  external: ["tree-sitter", "tree-sitter-rust", "tree-sitter-c-sharp", "tree-sitter-typescript", "tree-sitter-python", "@tree-sitter-grammars/tree-sitter-markdown"],
 });
 const { buildReplaySteps, asInsertion, replayLive } = require(bundle);
 test.after(() => {

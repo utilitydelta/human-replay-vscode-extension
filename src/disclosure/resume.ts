@@ -11,13 +11,14 @@
 
 import { StepAction } from "./guide";
 import { parseRoot } from "./diff";
+import { LanguageSpec, RUST } from "./language";
 import { findItemByName, leadingTriviaStart, SyntaxNode } from "./walk";
 
 /** A named item's exact bytes (leading doc-comments/attributes included), or
  *  undefined when the item isn't in `text`. */
-export function extractSymbol(text: string, symbol: string): string | undefined {
-  const node = findItemByName(parseRoot(text) as unknown as SyntaxNode, text, symbol);
-  return node ? text.slice(leadingTriviaStart(text, node.startIndex), node.endIndex) : undefined;
+export function extractSymbol(text: string, symbol: string, spec: LanguageSpec = RUST): string | undefined {
+  const node = findItemByName(parseRoot(text, spec) as unknown as SyntaxNode, text, symbol, spec);
+  return node ? text.slice(leadingTriviaStart(text, node.startIndex, spec), node.endIndex) : undefined;
 }
 
 /** Whether a step's outcome is already in the target. Create/modify land when the
