@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { buildReplaySteps, asInsertion, ReplayStep } from "./sequence";
-import { resolveStep, shiftWindow } from "./replay";
+import { lineDiffSteps } from "./lineDiff";
+import { resolveStep, resolveStepNoTree, shiftWindow } from "./replay";
 import { parseRoot } from "./diff";
 import { LanguageSpec, RUST } from "./language";
 import { revealCursor } from "./reveal";
@@ -46,6 +47,10 @@ interface Session {
   // green) via decorations + a Tab keybinding, instead of the native ghost. Same
   // step model and live re-anchoring underneath; only the surface differs.
   dramatic?: boolean;
+  // Patch steps: line-grain hunks over a whole file, resolved without a parse
+  // (arithmetic + content legs; the file may have no grammar at all). The spec
+  // field is unused in this mode.
+  lineMode?: boolean;
 }
 
 const DECORATION_CONTEXT = "humanReplay.diffDecorationActive";
@@ -144,14 +149,24 @@ export class DiffReplayController {
     if (!s || !step) return { kind: "skip" };
     const surface = this.surfaceOf(step);
     const symText = this.symbolText(document);
-    const root = parseRoot(symText, s.spec);
-    const cleanParse = !root.hasError;
-    // Arithmetic (baked range + our own accepts' delta, byte-validated) → structural
-    // anchor (byte-validated) → unique-substring content match. The arithmetic leg
-    // survives our own accepts shifting sibling index paths (an added comment line
-    // renumbers everything after it); the content leg survives the human's on-line
-    // edit drifting the path to a valid-but-wrong node. All gone → collision.
-    const r = resolveStep(symText, root, step, s.selfDelta);
+    // Line mode never parses: hunks live between lines, and the file may have no
+    // grammar (shell). Arithmetic + content legs only; cleanParse is moot (true
+    // keeps collisions surfacing instead of holding forever).
+    let r: [number, number] | null;
+    let cleanParse: boolean;
+    if (s.lineMode) {
+      cleanParse = true;
+      r = resolveStepNoTree(symText, step, s.selfDelta);
+    } else {
+      const root = parseRoot(symText, s.spec);
+      cleanParse = !root.hasError;
+      // Arithmetic (baked range + our own accepts' delta, byte-validated) → structural
+      // anchor (byte-validated) → unique-substring content match. The arithmetic leg
+      // survives our own accepts shifting sibling index paths (an added comment line
+      // renumbers everything after it); the content leg survives the human's on-line
+      // edit drifting the path to a valid-but-wrong node. All gone → collision.
+      r = resolveStep(symText, root, step, s.selfDelta);
+    }
     if (!r) return { kind: "collision", cleanParse };
 
     if (surface === "insert") {
@@ -196,6 +211,7 @@ export class DiffReplayController {
     dramatic = false,
     inPlace = false,
     spec: LanguageSpec = RUST,
+    lineMode = false,
   ): Promise<void> {
     // Demo path: seed the branch's current code so there is something to modify.
     // Real replay (inPlace): the symbol already lives in the workspace at the cursor
@@ -203,8 +219,8 @@ export class DiffReplayController {
     const at = editor.selection.active;
     if (!inPlace) await editor.edit((b) => b.insert(at, oldSrc));
     const anchorOffset = editor.document.offsetAt(at);
-    const steps = buildReplaySteps(oldSrc, newSrc, spec);
-    this.session = { uri: editor.document.uri, anchorOffset, symbolLen: oldSrc.length, selfDelta: 0, steps, index: 0, retrospective, dramatic, spec };
+    const steps = lineMode ? lineDiffSteps(oldSrc, newSrc) : buildReplaySteps(oldSrc, newSrc, spec);
+    this.session = { uri: editor.document.uri, anchorOffset, symbolLen: oldSrc.length, selfDelta: 0, steps, index: 0, retrospective, dramatic, spec, lineMode };
     this.lastAcceptAt = undefined;
     this.diverged = false;
     this.typing = false;

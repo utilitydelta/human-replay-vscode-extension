@@ -126,6 +126,25 @@ export interface StepAddress {
  * leads and arithmetic is the sibling-shift rescue. Null means collision —
  * surface it, never guess.
  */
+/**
+ * The parse-free resolver for line-grain Patch steps: arithmetic (byte-
+ * validated) → unique-content match. No structural leg — a Patch op's hunks
+ * live between lines, not tree nodes, and the file may have no grammar at all
+ * (shell). A pure insert trusts arithmetic alone: only our own accepts shift
+ * bytes, and their delta is exact. Null means collision — surface, never guess.
+ */
+export function resolveStepNoTree(
+  symText: string,
+  step: StepAddress,
+  selfDelta: number,
+): [number, number] | null {
+  const a: [number, number] = [step.start + selfDelta, step.end + selfDelta];
+  const aInBounds = a[0] >= 0 && a[1] <= symText.length;
+  if (step.originalText === "") return aInBounds ? a : null;
+  if (aInBounds && symText.slice(a[0], a[1]) === step.originalText) return a;
+  return resolveByContent(symText, step.originalText);
+}
+
 export function resolveStep(
   symText: string,
   root: SyntaxNode,

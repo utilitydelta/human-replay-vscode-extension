@@ -39,6 +39,14 @@ export class ReplayOrchestrator {
     });
   }
 
+  /** A Patch step's whole-file, line-grain replay: hunks from a line diff of
+   *  live target bytes vs sandbox bytes, served on the decoration surface (Tab
+   *  per hunk). No classifier, no parse — the file may have no grammar. The
+   *  anchor is file start; the caller parks the cursor there. */
+  async startPatch(editor: vscode.TextEditor, oldText: string, newText: string, retro?: Retrospective): Promise<void> {
+    await this.diffReplay.start(editor, oldText, newText, retro, true, true, RUST, true);
+  }
+
   async start(editor: vscode.TextEditor, oldSrc: string, newSrc: string, retro?: Retrospective, inPlace = false, spec: LanguageSpec = RUST): Promise<void> {
     const plan = classifyReplay(oldSrc, newSrc, spec);
     this.output.appendLine(

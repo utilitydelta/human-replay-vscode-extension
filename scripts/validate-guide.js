@@ -38,7 +38,9 @@ fs.writeFileSync(
     `export { parseRoot } from "../src/disclosure/diff";\n` +
     `export { languageForFile } from "../src/disclosure/language";\n` +
     `export { planCreateInsertion, separatorToInsert, splitLeadingPad } from "../src/disclosure/insertion";\n` +
-    `export { walkableSource } from "../src/disclosure/walk";\n`,
+    `export { walkableSource } from "../src/disclosure/walk";\n` +
+    `export { lineDiffSteps } from "../src/disclosure/lineDiff";\n` +
+    `export { resolveStepNoTree } from "../src/disclosure/replay";\n`,
 );
 esbuild.buildSync({
   entryPoints: [entry],
@@ -48,7 +50,7 @@ esbuild.buildSync({
   platform: "node",
   external: ["tree-sitter", "tree-sitter-rust", "tree-sitter-c-sharp", "tree-sitter-typescript", "tree-sitter-python", "@tree-sitter-grammars/tree-sitter-markdown", "tree-sitter-html", "tree-sitter-css"],
 });
-const { parseGuide, extractSymbol, stepAlreadyLanded, classifyReplay, buildReplaySteps, resolveStep, parseRoot, languageForFile, planCreateInsertion, separatorToInsert, splitLeadingPad, walkableSource } =
+const { parseGuide, extractSymbol, stepAlreadyLanded, classifyReplay, buildReplaySteps, resolveStep, parseRoot, languageForFile, planCreateInsertion, separatorToInsert, splitLeadingPad, walkableSource, lineDiffSteps, resolveStepNoTree } =
   require(bundle);
 const cleanup = () => {
   fs.rmSync(bundle, { force: true });
@@ -130,6 +132,39 @@ for (const step of guide.steps) {
     } else {
       simulated.set(rel, sandboxText);
       note(step, "ok", `${sandboxText.length} bytes`);
+    }
+    continue;
+  }
+
+  if (step.action === "patch") {
+    if (sandboxText === undefined) {
+      failures.push(step.id);
+      note(step, "FAIL", `sandbox file ${rel} unreadable`);
+    } else if (targetText === undefined) {
+      failures.push(step.id);
+      note(step, "FAIL", `target file ${rel} unreadable — a patch needs an existing file`);
+    } else if (targetText === sandboxText) {
+      note(step, "landed", "target file already byte-identical");
+    } else {
+      // The runner's exact hunk replay: line diff, each hunk resolved by the
+      // parse-free legs, sequentially. Byte-exact or the guide fails.
+      const hunks = lineDiffSteps(targetText, sandboxText);
+      let buf = targetText;
+      let selfDelta = 0;
+      let dead = false;
+      for (const h of hunks) {
+        const r = resolveStepNoTree(buf, h, selfDelta);
+        if (!r) { dead = true; break; }
+        buf = buf.slice(0, r[0]) + h.replacement + buf.slice(r[1]);
+        selfDelta += h.replacement.length - (r[1] - r[0]);
+      }
+      if (dead || buf !== sandboxText) {
+        failures.push(step.id);
+        note(step, "FAIL", `patch replay is not byte-exact (${hunks.length} hunk(s))`);
+      } else {
+        simulated.set(rel, sandboxText);
+        note(step, "ok", `${hunks.length} hunk(s), sequential byte-exact`);
+      }
     }
     continue;
   }

@@ -164,12 +164,14 @@ export class GuideRunner {
     this.steps.forEach((step, i) => {
       if (this.pc.status(i) === "done" || this.pc.status(i) === "skipped") return;
       const rel = step.file.split(":")[0];
-      // A whole-file step compares whole files; symbol steps compare the named
-      // item in the file's language. No language, no verdict (fail closed).
+      // A whole-file step (create-file, patch) compares whole files; symbol
+      // steps compare the named item in the file's language. No language, no
+      // verdict (fail closed).
+      const wholeFile = step.action === "create-file" || step.action === "patch";
       const spec = languageForFile(rel);
-      if (step.action !== "create-file" && !spec) return;
+      if (!wholeFile && !spec) return;
       const read = (root: string) =>
-        step.action === "create-file"
+        wholeFile
           ? this.readFileFromDisk(path.join(root, rel))
           : this.readSymbolFromDisk(path.join(root, rel), step.symbol, spec!);
       const target = read(workspaceRoot);
@@ -399,6 +401,45 @@ export class GuideRunner {
     this.completeCurrent(); // flows into the next step — file drops keep the momentum
   }
 
+  // Land a file's residual line-grain delta — the bits below symbol grain the
+  // engine can't address structurally (import edits, module doc headers, items
+  // whose home is a convention, files with no grammar at all). Hunks come from
+  // a line diff of the live target file against the sandbox file: both sides
+  // real bytes (invariant 1), served on diff-replay's decoration surface, one
+  // Tab per hunk, collisions surfacing like any other step.
+  private async runPatch(index: number, step: ReplayStep): Promise<void> {
+    const rel = step.file.split(":")[0];
+    const root = this.sandboxRoot;
+    if (!root) {
+      vscode.window.showWarningMessage(`Human Replay: step ${step.id} needs a sandbox to read ${rel} from — run Start Replay or set humanReplay.sandboxRoot.`);
+      return;
+    }
+    const sandboxText = this.readFileFromDisk(path.join(root, rel));
+    if (sandboxText === undefined) {
+      vscode.window.showWarningMessage(`Human Replay: step ${step.id} can't read ${rel} from the sandbox.`);
+      return;
+    }
+    const editor = await this.openTarget(step);
+    if (!editor) return;
+    const targetText = editor.document.getText();
+    if (targetText === sandboxText) {
+      this.pc.markDone(index);
+      this.changed();
+      this.output.appendLine(`[guide] step ${step.id}: already matches the sandbox — marked done`);
+      const next = this.pc.next();
+      if (next < this.steps.length) void this.runStep(next, () => {});
+      return;
+    }
+    this.pc.begin(index);
+    this.changed();
+    // Line mode anchors on the whole file: park the cursor at file start so the
+    // session's anchor offset is 0.
+    const top = new vscode.Position(0, 0);
+    editor.selection = new vscode.Selection(top, top);
+    this.output.appendLine(`[guide] step ${step.id} (${index + 1}/${this.steps.length}) patch ${rel}`);
+    await this.orchestrator.startPatch(editor, targetText, sandboxText, step.retro);
+  }
+
   /** Run a step by index: open its file, position the cursor, drive the engine.
    *  Never throws — callers include fire-and-forget auto-advance, so an engine
    *  error marks the step blocked and surfaces instead of vanishing as an
@@ -422,6 +463,10 @@ export class GuideRunner {
     }
     if (step.action === "create-file") {
       await this.runCreateFile(index, step); // whole-file bytes — no language needed
+      return;
+    }
+    if (step.action === "patch") {
+      await this.runPatch(index, step); // line-grain hunks — no language needed
       return;
     }
     const spec = languageForFile(step.file);

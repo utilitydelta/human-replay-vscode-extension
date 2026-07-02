@@ -18,7 +18,7 @@ import { Invariant, Retrospective } from "../retrospective/retrospective";
 // "create-file" drops a brand-new file whole from the sandbox — one gesture, no
 // symbol walk. For boilerplate-heavy new files (tests, fixtures) tabbing node by
 // node teaches nothing; the guide opts such files out at generation time.
-export type StepAction = "create" | "modify" | "delete" | "create-file";
+export type StepAction = "create" | "modify" | "delete" | "create-file" | "patch";
 
 export interface ReplayStep {
   /** Step id from the heading, e.g. "1.1". The program counter indexes the array. */
@@ -153,6 +153,8 @@ function parseAction(raw: string | undefined): StepAction {
     case "create file":
     case "create-file":
       return "create-file";
+    case "patch":
+      return "patch";
     default:
       throw new Error(`replay guide: step has unknown or missing **Action:** "${raw ?? ""}"`);
   }
@@ -221,16 +223,19 @@ export function parseGuide(md: string): ReplayGuide {
     // a File. A create-file step always resolves from the sandbox file.
     const missingFence =
       action === "create-file" ||
+      action === "patch" ||
       (action !== "create" && bag.before === undefined) ||
       (action !== "delete" && bag.after === undefined);
     if (missingFence && !file) {
       throw new Error(`replay guide: step ${id} (${action}) has no Before/After fence and no **File:** to resolve bytes from`);
     }
 
-    // A whole-file step has no symbol to anchor on — the file IS the unit; label
-    // it by the file so the panel and retrospective read naturally.
+    // A whole-file step (create-file, patch) has no symbol to anchor on — the
+    // file IS the unit; label it by the file so the panel and retrospective read
+    // naturally.
     const symbol =
-      (bag.fields.get("symbol") ?? "").replace(/^`|`$/g, "").trim() || (action === "create-file" ? file.split(":")[0] : "");
+      (bag.fields.get("symbol") ?? "").replace(/^`|`$/g, "").trim() ||
+      (action === "create-file" || action === "patch" ? file.split(":")[0] : "");
     if (!symbol) throw new Error(`replay guide: step ${id} missing **Symbol:**`);
 
     // Resolve referenced invariants from the declared set. A dangling reference

@@ -58,7 +58,8 @@ A change that violates one of these is drift, not a feature.
 
 - `src/disclosure/` — the engine. Insert walk: `walk.ts`, `session.ts`,
   `controller.ts`. Edit-aware: `diff.ts`, `replay.ts`, `sequence.ts`,
-  `strategy.ts`, `diffReplayController.ts`, `orchestrator.ts`. Guide:
+  `strategy.ts`, `diffReplayController.ts`, `orchestrator.ts`. Patch steps
+  (line-grain, below symbol grain): `lineDiff.ts`. Guide:
   `guide.ts` (parser), `guideRunner.ts` (program counter + routing + resume),
   `resume.ts`, `programCounter.ts`, `guideTree.ts`. Surfacing: `comments.ts`,
   `commentAnchor.ts`, `promptgen.ts`, `actionability.ts`.
