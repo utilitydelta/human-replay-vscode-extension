@@ -61,7 +61,7 @@ export class ReplayOrchestrator {
     // truth, no walk. An empty newSrc is a delete — the strike IS the gesture.
     const noWalk =
       spec.functionTypes.size === 0 ||
-      (newSrc.trim() !== "" && !walkableSource(newSrc, spec, editor.selection.active.character));
+      (newSrc.trim() !== "" && !walkableSource(newSrc, spec));
     if (plan.strategy === "surgical" || noWalk) {
       if (plan.strategy !== "surgical") this.output.appendLine("[replay] rewrite via block swap (not walkable: trivia, non-fn item, or no walk for this language)");
       await this.diffReplay.start(editor, oldSrc, newSrc, retro, true, inPlace, spec);

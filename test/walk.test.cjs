@@ -189,20 +189,20 @@ for (const { name, code } of CORPUS) {
 
 // --- walkableSource: the walk only claims what it can rebuild byte-exact -----
 // Proven by simulation, not hazard lists: replay the steps and demand byte
-// equality with the source. Anything the walk would silently lose fails the
-// gate — leading trivia (a created #[test] that never runs), a non-fn item, a
-// wrapping mod, blank lines the sibling lead collapses, a column mismatch —
-// and routes to the whole-symbol block-swap surface instead. This gate is what
-// the guide runner and the rewrite path consult.
+// equality with the source. Layout is source-derived, so blank lines, wrapping
+// mods/impls, and depth indents all rebuild; what still fails the gate is a
+// node kind the walk has no shape for (struct, const) — those route to the
+// whole-symbol block-swap surface instead. This gate is what the guide runner
+// and the rewrite path consult.
 const WALKABLE = [
   { name: "bare fn", src: "fn a() {\n    1\n}", want: true },
   { name: "pub fn (visibility is part of the item)", src: "pub fn a(&self) {\n    1\n}", want: true },
   { name: "doc comment rides the first step as a block → walkable", src: "/// doc\nfn a() {\n    1\n}", want: true },
   { name: "#[test] attribute rides the first step → walkable, test still runs", src: "#[test]\nfn t() {\n    1;\n}", want: true },
-  { name: "struct → not walkable (no fn node)", src: "pub struct S {\n    a: u64,\n}", want: false },
+  { name: "struct → not walkable (no shape for it)", src: "pub struct S {\n    a: u64,\n}", want: false },
   { name: "const → not walkable", src: "const N: u64 = 42;", want: false },
-  { name: "fn wrapped in a mod → not walkable (close brace would be dropped)", src: "mod m {\n    fn a() {}\n}", want: false },
-  { name: "blank line in the body → not walkable (sibling lead collapses it)", src: "fn a() {\n    let x = 1;\n\n    x\n}", want: false },
+  { name: "fn wrapped in a mod → walkable (mods are containers, close brace from source)", src: "mod m {\n    fn a() {}\n}", want: true },
+  { name: "blank line in the body → walkable (leads are source bytes)", src: "fn a() {\n    let x = 1;\n\n    x\n}", want: true },
   { name: "empty source → not walkable", src: "", want: false },
 ];
 
@@ -212,12 +212,13 @@ for (const { name, src, want } of WALKABLE) {
   });
 }
 
-// The gate is column-aware: a method extracted at impl depth (continuation lines
-// at absolute columns) rebuilds byte-exact only at its own base indent.
-test("walkableSource: depth-4 method is walkable at baseIndent 4, not at 0", () => {
+// Layout is source-derived: a method extracted at impl depth (continuation
+// lines at absolute columns) rebuilds byte-exact with no column hint at all.
+test("walkableSource: depth-4 method rebuilds byte-exact from its own bytes", () => {
   const atDepth = "pub fn parked(&mut self, n: u64) {\n        self.bytes += n;\n    }";
-  assert.strictEqual(walkableSource(atDepth, undefined, 4), true);
-  assert.strictEqual(walkableSource(atDepth, undefined, 0), false);
+  assert.strictEqual(walkableSource(atDepth), true);
+  const final = replay(computeSteps(atDepth)).at(-1).buf;
+  assert.strictEqual(final, atDepth);
 });
 
 // --- trivia rides the first step: rebuild byte-exact, docs and attrs intact ---

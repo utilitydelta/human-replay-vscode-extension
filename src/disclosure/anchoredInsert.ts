@@ -12,7 +12,7 @@
 // A missing parent returns null — the collision signal the panel surfaces so the
 // human decides, never a guess. Model-free, like the rest of disclosure.
 
-import { SyntaxNode, descendable, findFunction, namedChildren } from "./walk";
+import { SyntaxNode, descendable, findWalkStart, namedChildren } from "./walk";
 import { parseRoot } from "./diff";
 import { LanguageSpec, RUST } from "./language";
 
@@ -29,7 +29,7 @@ function colOf(src: string, i: number): number {
 // The container node whose header text matches `key` ("ROOT" = the function).
 function findContainer(symbolText: string, key: string, spec: LanguageSpec): SyntaxNode | null {
   const root = parseRoot(symbolText, spec);
-  if (key === "ROOT") return findFunction(root, spec);
+  if (key === "ROOT") return findWalkStart(root, spec);
   let found: SyntaxNode | null = null;
   (function scan(node: SyntaxNode): void {
     if (found) return;

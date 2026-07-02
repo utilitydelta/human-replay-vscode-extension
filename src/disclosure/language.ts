@@ -98,6 +98,11 @@ export const RUST: LanguageSpec = {
       case "if_expression":
         if (node.childForFieldName("alternative")) return null; // if/else reveals whole
         return withBlock(node, bodyOf(node, ["consequence"], BLOCK));
+      // Item containers walk too: shape first, members one by one.
+      case "impl_item":
+      case "trait_item":
+      case "mod_item":
+        return withBlock(node, bodyOf(node, ["body"], new Set(["declaration_list"])));
       default:
         return null;
     }
@@ -151,6 +156,14 @@ export const CSHARP: LanguageSpec = {
       case "if_statement":
         if (child.childForFieldName("alternative")) return null;
         return withBlock(child, bodyOf(child, ["consequence"], BLOCK));
+      // Item containers walk too: shape first, members one by one. A record
+      // with no body (positional only) has no declaration_list → leaf.
+      case "class_declaration":
+      case "struct_declaration":
+      case "interface_declaration":
+      case "record_declaration":
+      case "namespace_declaration":
+        return withBlock(child, bodyOf(child, ["body"], new Set(["declaration_list"])));
       default:
         return null;
     }
@@ -202,6 +215,9 @@ const tsSpec = (id: LanguageId, pick: (m: { typescript: unknown; tsx: unknown })
       case "if_statement":
         if (child.childForFieldName("alternative")) return null;
         return withBlock(child, bodyOf(child, ["consequence"], BLOCK));
+      // Item container: a class walks shape-first, members one by one.
+      case "class_declaration":
+        return withBlock(child, bodyOf(child, ["body"], new Set(["class_body"])));
       default:
         return null;
     }

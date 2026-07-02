@@ -225,7 +225,7 @@ for (const step of guide.steps) {
       const placement = planCreateInsertion(targetText, sandboxText, step.symbol, spec);
       const indent = placement.kind === "container" ? placement.indent : 0;
       const { pad, rest } = splitLeadingPad(after);
-      const surface = walkableSource(rest, spec, pad ? pad.length : indent) ? "disclosure walk" : "whole-symbol";
+      const surface = walkableSource(rest, spec) ? "disclosure walk" : "whole-symbol";
       if (placement.kind === "blocked") {
         failures.push(step.id);
         note(step, "FAIL", `placement blocked — ${placement.reason}`);

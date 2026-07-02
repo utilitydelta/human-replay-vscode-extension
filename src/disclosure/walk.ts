@@ -10,10 +10,12 @@
 // i+1 — so a finished block's last step naturally jumps the cursor back out to
 // the parent's next sibling.
 //
-// Offsets are exact because the walk simulates the build on a growing string.
-// Disclosure unit = control-flow blocks only (function/for/while/loop/if without
-// else). match arms, closures, if/else, struct literals are leaves: revealed
-// whole. See S1 FINDINGS for why that boundary is correct for the fencing demo.
+// Offsets are exact because the walk simulates the build on a growing string,
+// and layout comes from source bytes (leads, blank lines, close braces are all
+// slices of the input). Disclosure units = control-flow blocks (function/for/
+// while/loop/if without else) and item containers (class/impl/mod — members
+// disclose one by one). match arms, closures, if/else, struct literals are
+// leaves: revealed whole.
 
 import { LanguageSpec, RUST, parserFor } from "./language";
 
@@ -47,8 +49,6 @@ export interface Step {
   bareText: string;
 }
 
-const sp = (n: number) => " ".repeat(n);
-
 // A control-flow node we descend into, with the block whose interior we open.
 // Returns null for leaves (emitted whole). Per-language shapes live in the
 // language registry; this delegates.
@@ -68,6 +68,18 @@ export function findFunction(node: SyntaxNode, spec: LanguageSpec = RUST): Synta
   if (spec.functionTypes.has(node.type)) return node;
   for (const c of namedChildren(node)) {
     const f = findFunction(c, spec);
+    if (f) return f;
+  }
+  return null;
+}
+
+// First node the walk can open — a function OR an item container (class, impl,
+// mod). The walk's entry point: a created class discloses shape-first exactly
+// like a function does, members instead of statements.
+export function findWalkStart(node: SyntaxNode, spec: LanguageSpec = RUST): SyntaxNode | null {
+  if (spec.descendable(node)) return node;
+  for (const c of namedChildren(node)) {
+    const f = findWalkStart(c, spec);
     if (f) return f;
   }
   return null;
@@ -117,21 +129,19 @@ function findItem(
   return null;
 }
 
-// Whether the create walk can rebuild `src` byte-exact at `baseIndent` — proven
-// by simulation, not by enumerating hazards: replay the steps and demand byte
-// equality. Anything the walk would silently lose fails here: leading doc
-// comments and attributes (a created `#[test]` would compile and never run),
-// a non-fn item or a wrapping mod (no fn node / dropped wrapper), blank lines
-// inside the body (the sibling lead collapses them), a column mismatch (close
-// braces would land at the wrong indent). A non-walkable source must ride the
+// Whether the create walk can rebuild `src` byte-exact — proven by simulation,
+// not by enumerating hazards: replay the steps and demand byte equality.
+// Anything the walk would silently lose fails here: a node kind the walk has no
+// shape for, trailing bytes outside the walked node, grammar quirks that put
+// bytes where no named child claims them. A non-walkable source must ride the
 // whole-symbol block-swap surface instead: same ground truth, one Tab.
-export function walkableSource(src: string, spec: LanguageSpec = RUST, baseIndent = 0): boolean {
+export function walkableSource(src: string, spec: LanguageSpec = RUST): boolean {
   if (spec.functionTypes.size === 0) return false;
   let steps: Step[];
   try {
-    steps = computeSteps(src, spec, baseIndent);
+    steps = computeSteps(src, spec);
   } catch {
-    return false; // no function node in source
+    return false; // no walkable node in source
   }
   let buf = "";
   let cur = 0;
@@ -168,30 +178,26 @@ export function leadingTriviaStart(src: string, itemStart: number, spec: Languag
 }
 
 /**
- * Compute the disclosure steps for the first function in `src`.
+ * Compute the disclosure steps for the first walkable node in `src` — a bare
+ * function, or an item container (class/impl/mod) whose members disclose one by
+ * one, methods descending like any function.
  * Offsets are relative to the start of `src` (region offset 0).
  *
- * `baseIndent` is the column the function's first line starts at — 0 for a
- * top-level create, the container's child indent for a method disclosed inside
- * an impl/class. Nested lines and close braces are laid out relative to it, so
- * the build is byte-exact at depth (the first line itself carries no pad; the
- * cursor is already at that column).
+ * Layout is SOURCE-DERIVED: every byte between siblings, after a `{`, and
+ * before a `}` is a slice of `src`, never synthesized — so blank lines between
+ * members survive and the build is byte-exact at any depth by construction.
+ * The first line carries no pad; the cursor is already at its column.
  */
-export function computeSteps(src: string, spec: LanguageSpec = RUST, baseIndent = 0): Step[] {
+export function computeSteps(src: string, spec: LanguageSpec = RUST): Step[] {
   const root = parserFor(spec).parse(src).rootNode as unknown as SyntaxNode;
-  const fn = findFunction(root, spec);
-  if (!fn) throw new Error("no function node in source");
+  const start = findWalkStart(root, spec);
+  if (!start) throw new Error("no walkable node in source");
 
   // Leading trivia (doc comments, attributes) rides the first step as a block —
-  // emitted verbatim ahead of the fn shell, so a documented method still walks
-  // and a created #[test] still runs. A trivia-carrying source starts at its
-  // line start, so the fn's column comes from the source itself, not the cursor.
-  // (bareText excludes the prefix: divergence recovery re-appends the shell only.)
-  const prefix = src.slice(0, fn.startIndex);
-  if (prefix !== "") {
-    baseIndent = 0;
-    for (let k = fn.startIndex - 1; k >= 0 && src[k] !== "\n"; k--) baseIndent++;
-  }
+  // emitted verbatim ahead of the shell, so a documented method still walks and
+  // a created #[test] still runs. (bareText excludes the prefix: divergence
+  // recovery re-appends the shell only.)
+  const prefix = src.slice(0, start.startIndex);
 
   // Raw emissions in pre-order: text and the cursor it is inserted at, in the
   // coordinates of the buffer as it exists at that moment. Built by splicing a
@@ -202,12 +208,12 @@ export function computeSteps(src: string, spec: LanguageSpec = RUST, baseIndent 
     buffer = buffer.slice(0, pos) + text + buffer.slice(pos);
   };
 
-  // Emit `node`'s skeleton beginning at `pos`; `indent` is its line's column;
-  // `lead` (newline + indent for non-first siblings) is folded into the step so
-  // the provider inserts it at the previous sibling's end. `parentKey` is the
-  // header of the container this node lands in (for re-anchored recovery). Returns
-  // the position immediately after this node's full skeleton.
-  function emit(node: SyntaxNode, pos: number, indent: number, lead: string, parentKey: string): number {
+  // Emit `node`'s skeleton beginning at `pos`; `lead` is the source bytes
+  // between the previous sibling and this node, folded into the step so the
+  // provider inserts it at the previous sibling's end. `parentKey` is the
+  // header of the container this node lands in (for re-anchored recovery).
+  // Returns the position immediately after this node's full skeleton.
+  function emit(node: SyntaxNode, pos: number, lead: string, parentKey: string): number {
     const d = descendable(node, spec);
     if (!d) {
       const bareText = src.slice(node.startIndex, node.endIndex);
@@ -217,28 +223,36 @@ export function computeSteps(src: string, spec: LanguageSpec = RUST, baseIndent 
       return pos + text.length;
     }
     const header = src.slice(d.node.startIndex, d.block.startIndex + 1); // ends with `{`
-    const inner = indent + spec.indentWidth;
-    const body = lead + header + "\n" + sp(inner) + "\n" + sp(indent) + "}";
-    splice(pos, body);
     // The recovery shell (no baked lead/blank line): `header {\n}`.
-    const bareText = src.slice(d.node.startIndex, d.block.startIndex + 1) + "\n}";
+    const bareText = header + "\n}";
+    const kids = namedChildren(d.block);
+
+    if (kids.length === 0) {
+      // Empty body: the shell IS the node — emit its interior verbatim.
+      const body = lead + header + src.slice(d.block.startIndex + 1, d.block.endIndex);
+      splice(pos, body);
+      raw.push({ insert: body, insertPos: pos, kind: "container", parentKey, bareText });
+      return pos + body.length;
+    }
+
+    // Shape first: header, the source bytes up to where the first child will
+    // sit, and the source bytes that close the block after the last child.
+    const preFirst = src.slice(d.block.startIndex + 1, kids[0].startIndex);
+    const close = src.slice(kids[kids.length - 1].endIndex, d.block.endIndex);
+    const body = lead + header + preFirst + close;
+    splice(pos, body);
     raw.push({ insert: body, insertPos: pos, kind: "container", parentKey, bareText });
 
     // This container's own key, for its children to re-anchor against.
     const childKey = src.slice(d.node.startIndex, d.block.startIndex).trim();
-    const blankLine = pos + lead.length + header.length + 1 + inner; // cursor inside braces
-    const kids = namedChildren(d.block);
-    if (kids.length === 0) return pos + body.length;
-
-    let cursor = emit(kids[0], blankLine, inner, "", childKey);
+    let cursor = emit(kids[0], pos + lead.length + header.length + preFirst.length, "", childKey);
     for (let i = 1; i < kids.length; i++) {
-      cursor = emit(kids[i], cursor, inner, "\n" + sp(inner), childKey);
+      cursor = emit(kids[i], cursor, src.slice(kids[i - 1].endIndex, kids[i].startIndex), childKey);
     }
-    // Tail left after the children: "\n" + close-indent + "}".
-    return cursor + 1 + indent + 1;
+    return cursor + close.length;
   }
 
-  emit(fn, 0, baseIndent, prefix, "ROOT");
+  emit(start, 0, prefix, "ROOT");
 
   // cursorOffset of step i = insertPos of step i+1 (the next insertion point);
   // last step's cursor lands at the end of its own insert.

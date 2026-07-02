@@ -537,7 +537,7 @@ export class GuideRunner {
     const cursor = doc.positionAt(doc.getText().length);
     const editor = await this.parkCursor(doc, cursor);
 
-    if (walkableSource(rest, fw.spec, cursor.character)) {
+    if (walkableSource(rest, fw.spec)) {
       await this.disclosure.start(editor, rest, retro, fw.spec);
     } else {
       // Non-fn segment (imports, a struct, a comment block): one block ghost,
@@ -703,7 +703,7 @@ export class GuideRunner {
           const moved = editor.document.positionAt(editor.document.offsetAt(at) + pad.length);
           editor.selection = new vscode.Selection(moved, moved);
         }
-        if (!walkableSource(rest, spec, editor.selection.active.character)) {
+        if (!walkableSource(rest, spec)) {
           // The walk can only rebuild a bare function — no walk for this language,
           // a non-fn item (struct/const/trait), or leading doc comments/attributes
           // the walk would drop. The whole symbol lands as one block ghost at the

@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { computeSteps, findFunction } from "./walk";
+import { computeSteps, findWalkStart } from "./walk";
 import { DisclosureSession } from "./session";
 import { appendEdit, innermostContainerKey } from "./anchoredInsert";
 import { buildRecoveryGhost } from "./recoveryGhost";
@@ -206,7 +206,7 @@ export class DisclosureController {
     // The cursor column is the symbol's base indent: 0 at end-of-file, the child
     // indent when the runner parked it inside a container (or a rewrite cleared a
     // nested method). Seeding the walk with it keeps the build byte-exact at depth.
-    const steps = computeSteps(source, spec, editor.selection.active.character);
+    const steps = computeSteps(source, spec);
     const anchorOffset = editor.document.offsetAt(editor.selection.active);
     this.session = new DisclosureSession(
       editor.document.uri,
@@ -407,7 +407,7 @@ export class DisclosureController {
   private extractSymbol(document: vscode.TextDocument): string | undefined {
     if (!this.session) return undefined;
     const tail = document.getText().slice(this.session.anchorOffset);
-    const fn = findFunction(parseRoot(tail, this.session.spec), this.session.spec);
+    const fn = findWalkStart(parseRoot(tail, this.session.spec), this.session.spec);
     return fn ? tail.slice(0, fn.endIndex) : undefined;
   }
 
