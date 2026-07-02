@@ -25,7 +25,7 @@ const sepBundle = path.join(__dirname, ".insertion.bundle.cjs");
 fs.writeFileSync(
   path.join(__dirname, ".insertion.entry.ts"),
   `export { separatorToInsert, planCreateInsertion } from "../src/disclosure/insertion";\n` +
-    `export { RUST, TYPESCRIPT, PYTHON } from "../src/disclosure/language";\n`,
+    `export { RUST, TYPESCRIPT, PYTHON, MARKDOWN } from "../src/disclosure/language";\n`,
 );
 esbuild.buildSync({
   entryPoints: [path.join(__dirname, ".insertion.entry.ts")],
@@ -35,7 +35,7 @@ esbuild.buildSync({
   platform: "node",
   external: EXTERNALS,
 });
-const { separatorToInsert, planCreateInsertion, RUST, TYPESCRIPT, PYTHON } = require(sepBundle);
+const { separatorToInsert, planCreateInsertion, RUST, TYPESCRIPT, PYTHON, MARKDOWN } = require(sepBundle);
 
 const walkBundle = path.join(__dirname, ".walk-byname.bundle.cjs");
 fs.writeFileSync(
@@ -181,8 +181,72 @@ test("planCreateInsertion: the landed method is byte-identical to the sandbox sy
   assert.ok(built.includes(`    pub fn parked(&mut self, n: u64) {\n        self.bytes += n;\n    }\n}`), `ground truth bytes at depth:\n${built}`);
 });
 
-test("planCreateInsertion: top-level sandbox symbol routes to end-of-file", () => {
-  const plan = planCreateInsertion(`fn existing() {}\n`, SANDBOX_RS, "free_fn", RUST);
+// --- top-level symbols: the file root is a container like any other ----------
+
+test("planCreateInsertion: top-level symbol lands in sandbox order among live siblings", () => {
+  const sandbox = `fn alpha() {}\n\nfn parked() {\n    1;\n}\n\nfn omega() {}\n`;
+  const target = `fn alpha() {}\n\nfn omega() {}\n`;
+  const plan = planCreateInsertion(target, sandbox, "parked", RUST);
+  const built = landCreate(target, plan, "fn parked() {\n    1;\n}");
+  assert.strictEqual(built, `fn alpha() {}\n\nfn parked() {\n    1;\n}\n\nfn omega() {}\n`);
+});
+
+test("planCreateInsertion: top-level symbol with no live predecessor falls to end-of-file", () => {
+  const plan = planCreateInsertion(`fn unrelated_name() {}\n`, SANDBOX_RS, "free_fn", RUST);
+  assert.strictEqual(plan.kind, "top-level");
+});
+
+// --- duplicate container headers: member overlap disambiguates ---------------
+
+test("planCreateInsertion: two impls with the same header — the one sharing members wins", () => {
+  // Rust allows many `impl X` blocks; the sandbox method's siblings say which one.
+  const sandbox = `impl Cache {\n    fn far(&self) {}\n}\n\nimpl Cache {\n    pub fn a(&self) -> u64 {\n        self.bytes\n    }\n\n    pub fn parked(&mut self) {}\n}\n`;
+  const target = `impl Cache {\n    fn far(&self) {}\n}\n\nimpl Cache {\n    pub fn a(&self) -> u64 {\n        self.bytes\n    }\n}\n`;
+  const plan = planCreateInsertion(target, sandbox, "parked", RUST);
+  const built = landCreate(target, plan, "pub fn parked(&mut self) {}");
+  assert.ok(!rustParser.parse(built).rootNode.hasError, `must parse clean:\n${built}`);
+  assert.ok(
+    built.includes("pub fn a(&self) -> u64 {\n        self.bytes\n    }\n\n    pub fn parked"),
+    `lands in the impl that holds \`a\`, not the first impl:\n${built}`,
+  );
+});
+
+// --- CRLF targets: scaffolds match the file's line endings -------------------
+
+test("planCreateInsertion: CRLF target gets a CRLF scaffold (no mixed endings)", () => {
+  const target = `impl Cache {\r\n    pub fn a(&self) -> u64 {\r\n        self.bytes\r\n    }\r\n}\r\n`;
+  const plan = planCreateInsertion(target, SANDBOX_RS, "parked", RUST);
+  assert.strictEqual(plan.kind, "container");
+  assert.strictEqual(plan.scaffold, "\r\n\r\n    ", "scaffold uses the target's CRLF");
+  const built = landCreate(target, plan, "pub fn parked(&mut self, n: u64) {}");
+  assert.ok(!/[^\r]\n/.test(built.replace(/\r\n/g, "")), "no lone LF introduced");
+  assert.ok(built.includes("    }\r\n\r\n    pub fn parked"), `lands on its own CRLF-separated line:\n${built}`);
+});
+
+test("separatorToInsert: CRLF file gets CRLF separators", () => {
+  assert.strictEqual(separatorToInsert("fn a() {}\r\n"), "\r\n");
+  assert.strictEqual(separatorToInsert("fn a() {}\r\n\r\n"), "");
+});
+
+// --- markdown: top-level sections order; nested subsections stay honest ------
+
+test("planCreateInsertion: markdown root-level sections land in sandbox order", () => {
+  // Sections nest by heading level; same-level siblings at the ROOT order fine.
+  const sandbox = `## Setup\n\nSteps.\n\n## Parked\n\nNew section.\n\n## Usage\n\nHow.\n`;
+  const target = `## Setup\n\nSteps.\n\n## Usage\n\nHow.\n`;
+  const plan = planCreateInsertion(target, sandbox, "Parked", MARKDOWN);
+  assert.strictEqual(plan.kind, "container");
+  const built = landCreate(target, plan, "## Parked\n\nNew section.");
+  assert.ok(built.indexOf("## Parked") > built.indexOf("## Setup"), "after Setup");
+  assert.ok(built.indexOf("## Parked") < built.indexOf("## Usage"), "before Usage");
+});
+
+test("planCreateInsertion: markdown section nested under a heading falls to end-of-file, never a wrong spot", () => {
+  // Under `# Title` every ## is the H1 section's child, not the root's — with no
+  // section-container mapping the only honest spot is end-of-file (visible miss).
+  const sandbox = `# Title\n\nIntro.\n\n## Setup\n\nSteps.\n\n## Parked\n\nNew.\n\n## Usage\n`;
+  const target = `# Title\n\nIntro.\n\n## Setup\n\nSteps.\n\n## Usage\n`;
+  const plan = planCreateInsertion(target, sandbox, "Parked", MARKDOWN);
   assert.strictEqual(plan.kind, "top-level");
 });
 

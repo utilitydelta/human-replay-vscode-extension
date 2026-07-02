@@ -225,25 +225,24 @@ export class GuideRunner {
     return editor;
   }
 
-  // Where to land the cursor. An explicit `:line` wins. Otherwise land on the
-  // symbol if the target already has it — for modify/delete that's what changes,
-  // and for create it means a previous session already started this step (the
-  // resume case; appending at EOF would duplicate it). A fresh create lands where
-  // the sandbox says the symbol lives: inside the matching container for a nested
-  // symbol, end-of-file for a top-level one. A nested symbol whose container isn't
-  // in the target is blocked (undefined) — surfaced, never guessed (invariant 2).
+  // Where to land the cursor. Land on the symbol if the target already has it —
+  // for modify/delete that's what changes, and for create it means a previous
+  // session already started this step (the resume case; a fresh insert would
+  // duplicate it). A fresh create then places structurally from live bytes: the
+  // sandbox names the container (the file root counts) and the preceding sibling,
+  // and the plan lands the symbol relative to where they sit in the target NOW —
+  // an authored `:line` goes stale the moment earlier steps move the file, so it
+  // never drives create placement. A nested symbol whose container isn't in the
+  // target is blocked (undefined) — surfaced, never guessed (invariant 2).
+  // Modify/delete keep `:line` as an explicit override, then fall to end-of-file.
   private async insertionPoint(
     editor: vscode.TextEditor,
     step: ReplayStep,
     lineStr: string | undefined,
   ): Promise<vscode.Position | undefined> {
     const doc = editor.document;
-    if (lineStr && /^\d+$/.test(lineStr)) {
-      const line = Math.min(Math.max(0, parseInt(lineStr, 10) - 1), Math.max(0, doc.lineCount - 1));
-      return new vscode.Position(line, 0);
-    }
-
     const spec = languageForFile(step.file);
+
     if (spec) {
       const text = doc.getText();
       const node = findItemByName(parseRoot(text, spec) as unknown as SyntaxNode, text, step.symbol, spec);
@@ -268,6 +267,11 @@ export class GuideRunner {
           // top-level: end-of-file is the symbol's real home
         }
       }
+    }
+
+    if (step.action !== "create" && lineStr && /^\d+$/.test(lineStr)) {
+      const line = Math.min(Math.max(0, parseInt(lineStr, 10) - 1), Math.max(0, doc.lineCount - 1));
+      return new vscode.Position(line, 0);
     }
 
     // End of file, on a blank line separated from prior content by one empty line.
