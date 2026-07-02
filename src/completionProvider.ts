@@ -21,6 +21,9 @@ export class HumanReplayCompletionProvider
   private lastKey = "";
   // Suppress the per-keystroke error spam when Ollama is simply not running.
   private offline = false;
+  // One actionable warning per missing model, not one per keystroke. Keyed by
+  // model name so pointing humanReplay.model somewhere new re-checks.
+  private warnedMissingModel: string | undefined;
 
   constructor(
     private readonly output: vscode.OutputChannel,
@@ -117,6 +120,7 @@ export class HumanReplayCompletionProvider
         this.output.appendLine("[human-replay] model reachable again");
         this.offline = false;
       }
+      this.warnedMissingModel = undefined;
 
       this.lastKey = key;
       this.lastCompletion = completion;
@@ -142,9 +146,21 @@ export class HumanReplayCompletionProvider
               "(disclosure is unaffected; it never uses the model)",
           );
         }
-      } else {
-        this.output.appendLine(`[human-replay] error: ${String(err)}`);
+        return undefined;
       }
+      // The server is up but the model isn't pulled: Ollama 404s every request.
+      // Detect-and-guide once (invariant: never auto-pull), then stay quiet.
+      if (/Ollama 404\b|try pulling it first/i.test(String(err))) {
+        if (this.warnedMissingModel !== cfg.model) {
+          this.warnedMissingModel = cfg.model;
+          this.output.appendLine(`[human-replay] Ollama has no model "${cfg.model}" — autocomplete idle until it's pulled`);
+          void vscode.window.showWarningMessage(
+            `Human Replay: Ollama has no model "${cfg.model}". Pull it (ollama pull ${cfg.model}), or set humanReplay.model to one you have (ollama list).`,
+          );
+        }
+        return undefined;
+      }
+      this.output.appendLine(`[human-replay] error: ${String(err)}`);
       return undefined;
     }
   }
