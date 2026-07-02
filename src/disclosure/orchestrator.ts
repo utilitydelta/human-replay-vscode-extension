@@ -19,6 +19,14 @@ const REWRITE_CONTEXT = "humanReplay.rewriteStrikeActive";
 export class ReplayOrchestrator {
   private readonly strike: vscode.TextEditorDecorationType;
   private pending: { editor: vscode.TextEditor; range: vscode.Range; newSrc: string; retro?: Retrospective; spec: LanguageSpec } | undefined;
+  private onDeleteComplete: ((retro?: Retrospective) => void) | undefined;
+
+  /** A delete's whole gesture is the strike-and-clear: no walk follows, so no
+   *  engine completion event fires. This hook is how the clear itself reports
+   *  done (the guide runner advances its counter on it). */
+  setDeleteCompletionHandler(handler: (retro?: Retrospective) => void): void {
+    this.onDeleteComplete = handler;
+  }
 
   constructor(
     private readonly output: vscode.OutputChannel,
@@ -87,6 +95,7 @@ export class ReplayOrchestrator {
     // the whole gesture. Only descend-and-fill when there is something to fill.
     if (p.newSrc.trim() === "") {
       this.output.appendLine("[replay] delete: cleared old symbol, nothing to disclose");
+      this.onDeleteComplete?.(p.retro);
       return;
     }
     this.output.appendLine("[replay] rewrite: cleared old symbol, disclosing new");

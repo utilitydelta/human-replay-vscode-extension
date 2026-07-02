@@ -67,6 +67,14 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Same thinking-point hook for a completed diff-replay walk: the modification
   // beat ends on the invariant-tagged retrospective the human must sit with.
+  // A delete's whole gesture is the strike-and-clear — no walk follows, so the
+  // clear itself advances the counter. The retrospective has no symbol left to
+  // anchor on; surface its question as a message instead of a gate.
+  orchestrator.setDeleteCompletionHandler((retro) => {
+    guideRunner.completeCurrent();
+    if (retro) void vscode.window.showInformationMessage(`Human Replay — retrospective for ${retro.symbol}: ${retro.question}`);
+  });
+
   diffReplay.setCompletionHandler((done) => {
     guideRunner.completeCurrent(); // advance the program counter when the walk finishes
     if (!done.retrospective) return;
