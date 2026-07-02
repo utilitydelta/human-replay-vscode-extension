@@ -30,7 +30,10 @@ and the diff.
 
 ## Languages
 
-Rust, C#, TypeScript/JavaScript (tsx/jsx included), Python, and Markdown.
+Rust, C#, TypeScript/JavaScript (tsx/jsx included), Python, Markdown, HTML,
+and CSS. In HTML, elements are addressed by `tag#id` (plus the spec-unique
+tags like `body`); in CSS, rules and at-rule groups are addressed by their
+selector or condition text.
 
 ## Optional local model features
 

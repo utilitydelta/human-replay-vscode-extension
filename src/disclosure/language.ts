@@ -15,7 +15,7 @@
 import Parser = require("tree-sitter");
 import type { SyntaxNode } from "./walk";
 
-export type LanguageId = "rust" | "csharp" | "typescript" | "tsx" | "python" | "markdown";
+export type LanguageId = "rust" | "csharp" | "typescript" | "tsx" | "python" | "markdown" | "html" | "css";
 
 export interface LanguageSpec {
   id: LanguageId;
@@ -258,6 +258,80 @@ export const MARKDOWN: LanguageSpec = {
   containerBody: () => null,
 };
 
+// The css grammar declares no fields; find a child by type instead.
+const childOfType = (node: SyntaxNode, types: ReadonlySet<string>): SyntaxNode | null => {
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const c = node.namedChild(i)!;
+    if (types.has(c.type)) return c;
+  }
+  return null;
+};
+
+const CSS_BLOCKS = new Set(["block", "keyframe_block_list"]);
+
+export const CSS: LanguageSpec = {
+  indentWidth: 2,
+  id: "css",
+  grammar: () => require("tree-sitter-css"),
+  namedItemTypes: new Set(["rule_set", "media_statement", "supports_statement", "keyframes_statement"]),
+  // A rule's name is its prelude — the selector list or at-rule condition —
+  // whitespace-collapsed: the same text a human reads, stable across reflow.
+  nameOf(node, src) {
+    const block = childOfType(node, CSS_BLOCKS);
+    const text = src
+      .slice(node.startIndex, block ? block.startIndex : node.endIndex)
+      .replace(/\s+/g, " ")
+      .trim();
+    return text.length > 0 ? text : undefined;
+  },
+  liftParents: new Set(),
+  isTriviaLine: (t) => t.startsWith("/*") || t.startsWith("*"),
+  functionTypes: new Set(),
+  descendable: () => null,
+  // @media / @supports group whole rules — a rule created inside one in the
+  // sandbox must land inside the matching group in the target.
+  containerBody(node) {
+    if (node.type !== "media_statement" && node.type !== "supports_statement") return null;
+    return childOfType(node, new Set(["block"]));
+  },
+};
+
+// Tags the HTML spec guarantees unique per document — addressable bare. Any
+// other element needs an id: matching the first of many `div`s would replace
+// the wrong element's bytes, which is a guess, not ground truth.
+const HTML_UNIQUE_TAGS = new Set(["html", "head", "body", "title"]);
+const HTML_TAGS = new Set(["start_tag", "self_closing_tag"]);
+
+export const HTML: LanguageSpec = {
+  indentWidth: 2,
+  id: "html",
+  grammar: () => require("tree-sitter-html"),
+  namedItemTypes: new Set(["element", "script_element", "style_element"]),
+  // `tag#id` when the element carries an id; bare tag only when unique by spec.
+  nameOf(node, src) {
+    const tag = childOfType(node, HTML_TAGS);
+    if (!tag) return undefined;
+    const name = childOfType(tag, new Set(["tag_name"]));
+    if (!name) return undefined;
+    const tagText = src.slice(name.startIndex, name.endIndex);
+    for (let i = 0; i < tag.namedChildCount; i++) {
+      const attr = tag.namedChild(i)!;
+      if (attr.type !== "attribute") continue;
+      const key = childOfType(attr, new Set(["attribute_name"]));
+      if (!key || src.slice(key.startIndex, key.endIndex) !== "id") continue;
+      const quoted = childOfType(attr, new Set(["quoted_attribute_value"]));
+      const value = quoted ? childOfType(quoted, new Set(["attribute_value"])) : childOfType(attr, new Set(["attribute_value"]));
+      if (value) return `${tagText}#${src.slice(value.startIndex, value.endIndex)}`;
+    }
+    return HTML_UNIQUE_TAGS.has(tagText) ? tagText : undefined;
+  },
+  liftParents: new Set(),
+  isTriviaLine: (t) => t.startsWith("<!--"),
+  functionTypes: new Set(),
+  descendable: () => null,
+  containerBody: () => null,
+};
+
 function withBlock(node: SyntaxNode, block: SyntaxNode | null): { node: SyntaxNode; block: SyntaxNode } | null {
   return block ? { node, block } : null;
 }
@@ -276,6 +350,9 @@ const BY_EXTENSION: Record<string, LanguageSpec> = {
   ".py": PYTHON,
   ".md": MARKDOWN,
   ".markdown": MARKDOWN,
+  ".html": HTML,
+  ".htm": HTML,
+  ".css": CSS,
 };
 
 /** The language a file replays as, by extension — undefined when unsupported

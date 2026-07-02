@@ -29,7 +29,7 @@ fs.writeFileSync(
     `export { resolveStep } from "../src/disclosure/replay";\n` +
     `export { parseRoot } from "../src/disclosure/diff";\n` +
     `export { computeSteps } from "../src/disclosure/walk";\n` +
-    `export { RUST, CSHARP, TYPESCRIPT, PYTHON, MARKDOWN, languageForFile } from "../src/disclosure/language";\n`,
+    `export { RUST, CSHARP, TYPESCRIPT, PYTHON, MARKDOWN, HTML, CSS, languageForFile } from "../src/disclosure/language";\n`,
 );
 esbuild.buildSync({
   entryPoints: [entry],
@@ -37,9 +37,9 @@ esbuild.buildSync({
   outfile: bundle,
   format: "cjs",
   platform: "node",
-  external: ["tree-sitter", "tree-sitter-rust", "tree-sitter-c-sharp", "tree-sitter-typescript", "tree-sitter-python", "@tree-sitter-grammars/tree-sitter-markdown"],
+  external: ["tree-sitter", "tree-sitter-rust", "tree-sitter-c-sharp", "tree-sitter-typescript", "tree-sitter-python", "@tree-sitter-grammars/tree-sitter-markdown", "tree-sitter-html", "tree-sitter-css"],
 });
-const { extractSymbol, buildReplaySteps, classifyReplay, resolveStep, parseRoot, computeSteps, CSHARP, TYPESCRIPT, PYTHON, MARKDOWN, languageForFile } =
+const { extractSymbol, buildReplaySteps, classifyReplay, resolveStep, parseRoot, computeSteps, CSHARP, TYPESCRIPT, PYTHON, MARKDOWN, HTML, CSS, languageForFile } =
   require(bundle);
 test.after(() => {
   fs.rmSync(bundle, { force: true });
@@ -92,6 +92,14 @@ const MD_FILE = (setup) => `# Guide\n\nIntro paragraph.\n\n${setup}\n## Usage\n\
 const MD_SETUP = `## Setup\n\nInstall the runtime.\n\nThen configure the sandbox with the defaults.\n\nPoint the tool at the sandbox folder.\n\nOpen the target repo before starting a replay.\n\nThe status bar shows the position.\n\n`;
 const MD_SETUP_EDITED = `## Setup\n\nInstall the runtime and the grammar pack.\n\nThen configure the sandbox with the defaults.\n\nPoint the tool at the sandbox folder.\n\nOpen the target repo before starting a replay.\n\nThe status bar shows the position.\n\n`;
 
+const CSS_FILE = (card) => `:root {\n  --gap: 8px;\n}\n\n${card}\n\n@media (max-width: 600px) {\n  .card {\n    display: none;\n  }\n}\n`;
+const CSS_CARD = `/* the card surface */\n.card:hover,\n.tile {\n  color: red;\n  padding: var(--gap);\n}`;
+const CSS_CARD_EDITED = CSS_CARD.replace("color: red;", "color: blue;");
+
+const HTML_FILE = (header) => `<!DOCTYPE html>\n<html>\n<head>\n  <title>Demo</title>\n</head>\n<body>\n${header}\n  <div class="content">\n    <p>hello</p>\n  </div>\n</body>\n</html>\n`;
+const HTML_HEADER = `  <!-- top navigation -->\n  <div id="header" class="top">\n    <span>hi</span>\n  </div>`;
+const HTML_HEADER_EDITED = HTML_HEADER.replace("<span>hi</span>", "<span>hello there</span>");
+
 const CASES = [
   {
     spec: CSHARP,
@@ -127,6 +135,24 @@ const CASES = [
     file: MD_FILE(MD_SETUP),
     fileAfter: MD_FILE(MD_SETUP_EDITED),
     expectContains: ["## Setup", "Install the runtime."],
+    walkSymbol: undefined,
+  },
+  {
+    spec: CSS,
+    name: "css",
+    symbol: ".card:hover, .tile",
+    file: CSS_FILE(CSS_CARD),
+    fileAfter: CSS_FILE(CSS_CARD_EDITED),
+    expectContains: ["/* the card surface */", ".card:hover", "color: red;"],
+    walkSymbol: undefined,
+  },
+  {
+    spec: HTML,
+    name: "html",
+    symbol: "div#header",
+    file: HTML_FILE(HTML_HEADER),
+    fileAfter: HTML_FILE(HTML_HEADER_EDITED),
+    expectContains: ["<!-- top navigation -->", '<div id="header"', "<span>hi</span>"],
     walkSymbol: undefined,
   },
 ];
@@ -182,8 +208,33 @@ test("languageForFile: extension routing, unknown fails closed", () => {
   assert.strictEqual(languageForFile("a/b.js").id, "typescript");
   assert.strictEqual(languageForFile("a/b.py").id, "python");
   assert.strictEqual(languageForFile("docs/guide.md").id, "markdown");
+  assert.strictEqual(languageForFile("app/index.html").id, "html");
+  assert.strictEqual(languageForFile("styles/site.css").id, "css");
+  assert.strictEqual(languageForFile("styles/site.scss"), undefined); // scss is a different grammar — fails closed
   assert.strictEqual(languageForFile("setup.sh"), undefined);
   assert.strictEqual(languageForFile("Makefile"), undefined);
+});
+
+// The HTML addressability rule: an element without an id has no honest name —
+// first-of-many-divs would be a guess. Unique-by-spec tags stay addressable.
+test("html: only id'd elements and spec-unique tags resolve", () => {
+  const file = HTML_FILE(HTML_HEADER);
+  assert.strictEqual(extractSymbol(file, "div", HTML), undefined);
+  assert.strictEqual(extractSymbol(file, "span", HTML), undefined);
+  const body = extractSymbol(file, "body", HTML);
+  assert.ok(body && body.startsWith("<body>"), "spec-unique tag resolves bare");
+  const title = extractSymbol(file, "title", HTML);
+  assert.ok(title && title.startsWith("<title>"), "title resolves bare");
+});
+
+// CSS at-rule groups are containers: a rule nested under @media is addressable,
+// and the group itself resolves by its prelude.
+test("css: @media group and its nested rule both resolve by prelude", () => {
+  const file = CSS_FILE(CSS_CARD);
+  const media = extractSymbol(file, "@media (max-width: 600px)", CSS);
+  assert.ok(media && media.startsWith("@media"), "at-rule group resolves");
+  const nested = extractSymbol(file, ".card", CSS);
+  assert.ok(nested && nested.includes("display: none;"), "nested rule resolves inside the group");
 });
 
 test("markdown: nested section resolves by heading text, not position", () => {

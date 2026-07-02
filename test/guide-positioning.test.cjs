@@ -19,7 +19,7 @@ const esbuild = require("esbuild");
 const Parser = require("tree-sitter");
 const Rust = require("tree-sitter-rust");
 
-const EXTERNALS = ["tree-sitter", "tree-sitter-rust", "tree-sitter-c-sharp", "tree-sitter-typescript", "tree-sitter-python", "@tree-sitter-grammars/tree-sitter-markdown"];
+const EXTERNALS = ["tree-sitter", "tree-sitter-rust", "tree-sitter-c-sharp", "tree-sitter-typescript", "tree-sitter-python", "@tree-sitter-grammars/tree-sitter-markdown", "tree-sitter-html", "tree-sitter-css"];
 
 const sepBundle = path.join(__dirname, ".insertion.bundle.cjs");
 fs.writeFileSync(

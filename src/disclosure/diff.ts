@@ -248,6 +248,25 @@ function editsFor(
  * script in OLD-source coordinates plus the stable and moved ranges.
  */
 export function diffSymbols(oldSrc: string, newSrc: string, spec: LanguageSpec = RUST): Diff {
+  // An empty old side means "land the whole new symbol". The tree walk below
+  // slices the NEW ROOT'S SPAN, and a fragment root can start past byte 0 — an
+  // extracted nested symbol carries its line-start indent, which sits before
+  // the root node (html's document, c_sharp's compilation_unit). Copy the whole
+  // source instead so no byte is dropped.
+  if (oldSrc.length === 0 && newSrc.length > 0) {
+    return {
+      ops: [{
+        start: 0,
+        end: 0,
+        replacement: newSrc,
+        kind: "replace",
+        oldText: "",
+        anchor: { path: [], left: { at: "innerLeft" }, right: { at: "innerRight" } },
+      }],
+      stable: [],
+      moved: [],
+    };
+  }
   const o = parseRoot(oldSrc, spec);
   const n = parseRoot(newSrc, spec);
   const stable: [number, number][] = [];

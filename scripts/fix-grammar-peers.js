@@ -10,6 +10,7 @@ const WIDE = ">=0.21.0";
 const GRAMMARS = [
   "@tree-sitter-grammars/tree-sitter-markdown",
   "tree-sitter-c-sharp",
+  "tree-sitter-html",
   "tree-sitter-python",
   "tree-sitter-typescript",
 ];
