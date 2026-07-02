@@ -12,6 +12,7 @@ import { CommentLayer } from "./disclosure/comments";
 import { buildMessages, generatePrompt } from "./disclosure/promptgen";
 import { setIsActionable } from "./disclosure/actionability";
 import { readConfig } from "./config";
+import { offerModelPull } from "./modelPull";
 import { surfaceRetrospective } from "./retrospective/surface";
 
 // Detect-and-guide for the opt-in model layer (invariant 2, decision #4): never
@@ -171,9 +172,7 @@ export function activate(context: vscode.ExtensionContext) {
               if (choice === "Start Ollama") startOllamaTerminal(output);
             });
         } else if (/not found|no such model|model/i.test(msg)) {
-          vscode.window.showWarningMessage(
-            `Human Replay: Ollama has no model "${model}". Pull it (ollama pull ${model}) or set humanReplay.promptModel.`,
-          );
+          void offerModelPull(cfg.apiBase, model, output, "the prompt generator needs an instruct model (or set humanReplay.promptModel)");
         } else {
           vscode.window.showWarningMessage(`Human Replay: prompt generation failed — ${msg}`);
         }

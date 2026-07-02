@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { readConfig } from "./config";
 import { resolveTemplate } from "./templates";
 import { generateFim } from "./ollama";
+import { offerModelPull } from "./modelPull";
 import { postprocess } from "./postprocess";
 import { DisclosureController } from "./disclosure/controller";
 import { DiffReplayController } from "./disclosure/diffReplayController";
@@ -149,14 +150,15 @@ export class HumanReplayCompletionProvider
         return undefined;
       }
       // The server is up but the model isn't pulled: Ollama 404s every request.
-      // Detect-and-guide once (invariant: never auto-pull), then stay quiet.
+      // Detect and guide once — a one-click download the human ratifies, never
+      // an automatic pull. Success clears the latch so the next keystroke works.
       if (/Ollama 404\b|try pulling it first/i.test(String(err))) {
         if (this.warnedMissingModel !== cfg.model) {
           this.warnedMissingModel = cfg.model;
           this.output.appendLine(`[human-replay] Ollama has no model "${cfg.model}" — autocomplete idle until it's pulled`);
-          void vscode.window.showWarningMessage(
-            `Human Replay: Ollama has no model "${cfg.model}". Pull it (ollama pull ${cfg.model}), or set humanReplay.model to one you have (ollama list).`,
-          );
+          void offerModelPull(cfg.apiBase, cfg.model, this.output, "autocomplete needs a FIM base model").then((pulled) => {
+            if (pulled) this.warnedMissingModel = undefined;
+          });
         }
         return undefined;
       }
