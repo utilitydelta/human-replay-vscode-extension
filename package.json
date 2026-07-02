@@ -1,14 +1,14 @@
 {
-  "name": "replay-tab",
-  "displayName": "Replay Tab",
-  "description": "Local, FIM-based inline autocomplete. No cloud, no agent, no chat. Your code never leaves your machine.",
+  "name": "human-replay-vscode-extension",
+  "displayName": "Human Replay",
+  "description": "Replay sandboxed AI work into your real branch one Tab at a time. Guide-driven, model-free replay; local FIM autocomplete on the side.",
   "version": "0.0.1",
   "publisher": "utilitydelta",
   "license": "Apache-2.0",
   "private": true,
   "repository": {
     "type": "git",
-    "url": "https://github.com/utilitydelta/replay-tab"
+    "url": "https://github.com/utilitydelta/human-replay-vscode-extension"
   },
   "engines": {
     "vscode": "^1.85.0"

@@ -1,8 +1,8 @@
-# Replay Tab — agent operating guide
+# Human Replay VS Code extension — agent operating guide
 
 The human half of Human Replay: a VS Code extension that replays sandboxed agent
 work into the real branch one AST node at a time, on the Tab key. The scout half
-(sandbox exploration, guide generation) is the sibling repo `replay-scout`.
+(sandbox prep, guide generation) is the sibling repo `human-replay`.
 Formerly `celeriant-tab`; that repo holds the build history and doc tree.
 
 Docs are the human's job. This file is the only doc agents maintain; do not add
@@ -21,7 +21,7 @@ A change that violates one of these is drift, not a feature.
   byte-exactness. When bytes can't be proven to belong somewhere, surface to
   the human — never guess.
 - **The guide is canonical.** The parser here is the single source of truth for
-  the guide format. The generator spec in `replay-scout` describes it; a format
+  the guide format. The generator spec in `human-replay` describes it; a format
   change lands in both repos in the same sitting. A malformed guide fails loud.
 - **The human decides; the AST proposes.** Surgical vs rewrite, step routing,
   resume verdicts — all computed model-free and ratified by the human at the
@@ -72,8 +72,8 @@ A change that violates one of these is drift, not a feature.
 
 ## Tooling notes
 
-- `qdrant-find` collection follows the folder name (`replay-tab`); if the
-  collection doesn't exist yet, grep.
+- `qdrant-find` collection follows the folder name
+  (`human-replay-vscode-extension`); if the collection doesn't exist yet, grep.
 - The build-method skills (`~/work/utilitydelta/build-method/skills/`) apply:
   `empirical-loop` before any non-trivial build, `coding-style` +
   `references/typescript.md` for the code, `unit-testing-discipline` for
