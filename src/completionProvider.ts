@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import { readConfig } from "./config";
 import { resolveTemplate } from "./templates";
 import { generateFim } from "./ollama";
-import { offerModelPull } from "./modelPull";
+import { offerModelPull, startOllamaTerminal } from "./modelPull";
 import { postprocess } from "./postprocess";
 import { DisclosureController } from "./disclosure/controller";
 import { DiffReplayController } from "./disclosure/diffReplayController";
@@ -140,12 +140,20 @@ export class HumanReplayCompletionProvider
       // once, not on every keystroke, and stay quiet until it comes back.
       const offline = /fetch failed|ECONNREFUSED|ENOTFOUND|EAI_AGAIN/i.test(String(err));
       if (offline) {
+        // Once per outage, in the persona's language, with the one-click fix.
+        // Autocomplete is ON (they typed with it enabled) — silence here reads
+        // as "broken", not "opt-in".
         if (!this.offline) {
           this.offline = true;
           this.output.appendLine(
-            "[human-replay] model unreachable — autocomplete off until it returns " +
+            "[human-replay] model server unreachable — autocomplete idle until it returns " +
               "(disclosure is unaffected; it never uses the model)",
           );
+          void vscode.window
+            .showWarningMessage("Human Replay: local autocomplete needs its model server, which isn't running.", "Start it")
+            .then((choice) => {
+              if (choice === "Start it") startOllamaTerminal(this.output);
+            });
         }
         return undefined;
       }
@@ -155,8 +163,8 @@ export class HumanReplayCompletionProvider
       if (/Ollama 404\b|try pulling it first/i.test(String(err))) {
         if (this.warnedMissingModel !== cfg.model) {
           this.warnedMissingModel = cfg.model;
-          this.output.appendLine(`[human-replay] Ollama has no model "${cfg.model}" — autocomplete idle until it's pulled`);
-          void offerModelPull(cfg.apiBase, cfg.model, this.output, "autocomplete needs a FIM base model").then((pulled) => {
+          this.output.appendLine(`[human-replay] model "${cfg.model}" not installed — autocomplete idle until it is`);
+          void offerModelPull(cfg.apiBase, cfg.model, this.output, "local autocomplete needs its model — a one-time download").then((pulled) => {
             if (pulled) this.warnedMissingModel = undefined;
           });
         }

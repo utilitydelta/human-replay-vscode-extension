@@ -12,20 +12,8 @@ import { CommentLayer } from "./disclosure/comments";
 import { buildMessages, generatePrompt } from "./disclosure/promptgen";
 import { setIsActionable } from "./disclosure/actionability";
 import { readConfig } from "./config";
-import { offerModelPull } from "./modelPull";
+import { ensureAutocompleteReady, offerModelPull, startOllamaTerminal } from "./modelPull";
 import { surfaceRetrospective } from "./retrospective/surface";
-
-// Detect-and-guide for the opt-in model layer (invariant 2, decision #4): never
-// auto-spawn Ollama on activation or F5. Only when a model action finds it
-// unreachable do we offer a one-click that runs `ollama serve` in a visible
-// terminal — the human stays in control of whether inference is even running.
-function startOllamaTerminal(output: vscode.OutputChannel): void {
-  const existing = vscode.window.terminals.find((t) => t.name === "Ollama");
-  const terminal = existing ?? vscode.window.createTerminal({ name: "Ollama" });
-  terminal.show();
-  terminal.sendText("ollama serve");
-  output.appendLine("[ollama] started `ollama serve` in a visible terminal (user-initiated)");
-}
 
 export function activate(context: vscode.ExtensionContext) {
   const output = vscode.window.createOutputChannel("Human Replay");
@@ -165,14 +153,14 @@ export function activate(context: vscode.ExtensionContext) {
         if (/fetch failed|ECONNREFUSED|ENOTFOUND|EAI_AGAIN/i.test(msg)) {
           void vscode.window
             .showWarningMessage(
-              `Human Replay: can't reach Ollama at ${cfg.apiBase}. Start it, then pull an instruct model: ollama pull ${model}`,
-              "Start Ollama",
+              "Human Replay: the prompt generator needs the local model server, which isn't running.",
+              "Start it",
             )
             .then((choice) => {
-              if (choice === "Start Ollama") startOllamaTerminal(output);
+              if (choice === "Start it") startOllamaTerminal(output);
             });
         } else if (/not found|no such model|model/i.test(msg)) {
-          void offerModelPull(cfg.apiBase, model, output, "the prompt generator needs an instruct model (or set humanReplay.promptModel)");
+          void offerModelPull(cfg.apiBase, model, output, "the prompt generator needs its model — a one-time download");
         } else {
           vscode.window.showWarningMessage(`Human Replay: prompt generation failed — ${msg}`);
         }
@@ -448,6 +436,9 @@ export function activate(context: vscode.ExtensionContext) {
     }),
   );
 
+  // The intent gesture: turning autocomplete ON walks readiness — server up?
+  // model present? — offering each fix as one click, in autocomplete language.
+  // The persona wants "local autocomplete on", not an Ollama tutorial.
   context.subscriptions.push(
     vscode.commands.registerCommand("humanReplay.toggle", async () => {
       const cfg = vscode.workspace.getConfiguration("humanReplay");
@@ -458,9 +449,13 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.ConfigurationTarget.Global,
       );
       vscode.window.setStatusBarMessage(
-        `Human Replay ${next ? "enabled" : "disabled"}`,
+        `Human Replay: local autocomplete ${next ? "enabled" : "disabled"}`,
         2000,
       );
+      if (next) {
+        const c = readConfig();
+        void ensureAutocompleteReady(c.apiBase, c.model, output);
+      }
     }),
   );
 

@@ -71,7 +71,7 @@
       },
       {
         "command": "humanReplay.startOllama",
-        "title": "Start Ollama (ollama serve in a terminal)",
+        "title": "Autocomplete: Start the Local Model Server",
         "category": "Human Replay"
       },
       {

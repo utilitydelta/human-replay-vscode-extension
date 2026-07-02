@@ -134,6 +134,19 @@ export async function pullModel(
   }
 }
 
+/** Installed model names (with tags), or undefined when the server is
+ *  unreachable — the readiness check's two questions in one call. */
+export async function listModels(apiBase: string, signal?: AbortSignal): Promise<string[] | undefined> {
+  try {
+    const res = await fetch(new URL("api/tags", withTrailingSlash(apiBase)), { signal });
+    if (!res.ok) return undefined;
+    const json = (await res.json()) as { models?: { name?: string }[] };
+    return (json.models ?? []).map((m) => m.name ?? "").filter((n) => n !== "");
+  } catch {
+    return undefined;
+  }
+}
+
 function withTrailingSlash(base: string): string {
   return base.endsWith("/") ? base : base + "/";
 }
