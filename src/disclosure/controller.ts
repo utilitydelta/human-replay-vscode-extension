@@ -10,6 +10,10 @@ import { Retrospective } from "../retrospective/retrospective";
 
 const DIVERGED_CONTEXT = "humanReplay.disclosureDiverged";
 const ACTIVE_CONTEXT = "humanReplay.disclosureActive";
+// The caret sits where the next planned node can land (its parent container).
+// Gates the diverged Tab keybinding: outside the container Tab stays an indent,
+// so the human's own mid-walk code never fights the walk for the key.
+const RECOVERY_ELIGIBLE_CONTEXT = "humanReplay.recoveryEligible";
 const SETTLE_MS = 450; // wait for typing to settle before re-offering the recovery ghost
 
 // Drives the descend-and-fill walk over the native inline-completion surface.
@@ -33,6 +37,14 @@ const SETTLE_MS = 450; // wait for typing to settle before re-offering the recov
 // → cursor descends (controlled) → next ghost. If a spot can't take an insert ghost,
 // Tab (gated on no inline suggestion) falls back to continueWalk — the same node
 // placed by parent-container append (anchoredInsert).
+//
+// The caret is the human's. Recovery NEVER moves it on a timer or a selection
+// event — a settle or an arrow key must not teleport the cursor out of the code
+// they are writing (feedback.md #4). While the caret sits outside the pending
+// node's container the walk simply waits (a one-time status hint says where);
+// eligibility is re-checked on every cursor rest, so returning to the container
+// brings the ghost back by itself. The two sanctioned caret moves are explicit
+// gestures: accepting a ghost (Tab), and re-running the step from the panel.
 //
 // Two rules keep recovery calm rather than flashing on every keystroke. (1) The
 // ghost is suppressed until typing SETTLES: VS Code auto-queries the provider on each
@@ -63,6 +75,8 @@ export class DisclosureController {
   // re-query of the provider doesn't flash a ghost on every character.
   private recoverySettled = false;
   private continuing = false; // Tab re-entrancy latch for the re-anchored continue
+  private recoveryEligible = false; // mirror of the context key, for dedupe
+  private hintedIneligible = false; // one hint per excursion out of the container
 
   constructor(private readonly output: vscode.OutputChannel) {}
 
@@ -81,6 +95,16 @@ export class DisclosureController {
   private setDiverged(v: boolean): void {
     this.diverged = v;
     void vscode.commands.executeCommand("setContext", DIVERGED_CONTEXT, v);
+    // Divergence starts at the human's own edit, so the caret is almost always
+    // in the right container — start eligible and let the settle correct it.
+    this.setRecoveryEligible(v);
+    this.hintedIneligible = false;
+  }
+
+  private setRecoveryEligible(v: boolean): void {
+    if (this.recoveryEligible === v) return;
+    this.recoveryEligible = v;
+    void vscode.commands.executeCommand("setContext", RECOVERY_ELIGIBLE_CONTEXT, v);
   }
 
   private setActive(v: boolean): void {
@@ -341,13 +365,12 @@ export class DisclosureController {
     }, SETTLE_MS);
   }
 
-  // Offer the next planned node in recovery mode. If it belongs to an ancestor of the
-  // cursor's container (a climb-out — the walk is moving back out, e.g. the fn tail
-  // after a nested loop), drop the caret to that container's append frontier first so
-  // the inline insert ghost shows there — the same caret-then-ghost feel as the happy
-  // path's step-to-step reposition. The move re-enters offerRecovery now in the right
-  // container, where the ghost renders. Otherwise the node lands at the cursor: trigger
-  // the inline ghost in place.
+  // Offer the next planned node in recovery mode — at the human's caret, never
+  // by moving it. Eligibility is the AST's verdict: the caret's innermost
+  // container must be the node's parent. Outside it the walk waits (one status
+  // hint per excursion says where the node lands); the next cursor rest inside
+  // the container re-offers by itself. An unparseable symbol region counts as
+  // eligible — Tab's re-anchored continue owns surfacing a real collision.
   private offerRecovery(editor: vscode.TextEditor): void {
     const s = this.session;
     const step = s?.current();
@@ -355,28 +378,23 @@ export class DisclosureController {
     if (editor.document.uri.toString() !== s.uri.toString()) return;
 
     const symbolText = this.extractSymbol(editor.document);
-    if (symbolText !== undefined) {
-      const cursorRel = editor.document.offsetAt(editor.selection.active) - s.anchorOffset;
-      if (innermostContainerKey(symbolText, cursorRel, s.spec) !== step.parentKey) {
-        // Climb-out: the cursor is nested deeper than this node's parent. Drop it to the
-        // append frontier of the parent container; the resulting selection change re-
-        // offers, now in the right container, and the inline ghost renders there.
-        const edit = appendEdit(symbolText, step.parentKey, step.bareText, s.spec);
-        if (edit) {
-          const frontier = editor.document.positionAt(s.anchorOffset + edit.start);
-          if (!editor.selection.active.isEqual(frontier)) {
-            editor.selection = new vscode.Selection(frontier, frontier);
-            revealCursor(editor, frontier);
-            this.output.appendLine(
-              `[disclosure] climb-out: caret → ${step.parentKey === "ROOT" ? "fn body" : step.parentKey} for '${step.bareText.split("\n")[0].trim()}'`,
-            );
-            return;
-          }
-        }
-        // edit null (the parent is gone) → fall through; the inline ghost won't render,
-        // and Tab falls back to continueWalk, which surfaces the collision.
+    const cursorRel = editor.document.offsetAt(editor.selection.active) - s.anchorOffset;
+    const eligible =
+      symbolText === undefined || innermostContainerKey(symbolText, cursorRel, s.spec) === step.parentKey;
+    this.setRecoveryEligible(eligible);
+    if (!eligible) {
+      if (!this.hintedIneligible) {
+        this.hintedIneligible = true;
+        const home = step.parentKey === "ROOT" ? "the function body" : `\`${step.parentKey.split("\n")[0].trim()}\``;
+        void vscode.window.setStatusBarMessage(
+          `Human Replay: walk waiting — the next node lands in ${home}. Move the cursor there, or re-run the step from the Replay Guide panel.`,
+          6000,
+        );
+        this.output.appendLine(`[disclosure] recovery waiting — caret outside ${step.parentKey === "ROOT" ? "fn body" : step.parentKey}`);
       }
+      return;
     }
+    this.hintedIneligible = false;
     void vscode.commands.executeCommand("editor.action.inlineSuggest.trigger");
   }
 
@@ -414,6 +432,16 @@ export class DisclosureController {
     this.clearSettle();
     this.recoverySettled = true; // an explicit Tab — the next ghost may show at once
     const symbolText = this.extractSymbol(editor.document);
+    // Defense in depth behind the recoveryEligible context gate: a Tab that
+    // slips through while the caret sits outside the node's container must not
+    // place bytes the human didn't aim — hold, don't append.
+    if (symbolText !== undefined) {
+      const cursorRel = editor.document.offsetAt(editor.selection.active) - s.anchorOffset;
+      if (innermostContainerKey(symbolText, cursorRel, s.spec) !== step.parentKey) {
+        this.output.appendLine("[disclosure] tab held — caret outside the walk's container");
+        return;
+      }
+    }
     const edit = symbolText !== undefined ? appendEdit(symbolText, step.parentKey, step.bareText, s.spec) : null;
     if (!edit) {
       await this.surfaceCollision();

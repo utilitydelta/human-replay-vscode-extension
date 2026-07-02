@@ -113,7 +113,7 @@
       {
         "command": "humanReplay.continueDisclosure",
         "key": "tab",
-        "when": "editorTextFocus && humanReplay.disclosureDiverged && !suggestWidgetVisible && !inlineSuggestionVisible"
+        "when": "editorTextFocus && humanReplay.disclosureDiverged && humanReplay.recoveryEligible && !suggestWidgetVisible && !inlineSuggestionVisible"
       },
       {
         "command": "humanReplay.nudgeGhost",
