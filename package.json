@@ -1,0 +1,256 @@
+{
+  "name": "replay-tab",
+  "displayName": "Replay Tab",
+  "description": "Local, FIM-based inline autocomplete. No cloud, no agent, no chat. Your code never leaves your machine.",
+  "version": "0.0.1",
+  "publisher": "utilitydelta",
+  "license": "Apache-2.0",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/utilitydelta/replay-tab"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Machine Learning",
+    "Programming Languages"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "replayTab.startReplay",
+        "title": "Start Replay",
+        "category": "Replay Tab"
+      },
+      {
+        "command": "replayTab.toggle",
+        "title": "Toggle Autocomplete",
+        "category": "Replay Tab"
+      },
+      {
+        "command": "replayTab.comments.add",
+        "title": "Replay Tab: Add Replay Note"
+      },
+      {
+        "command": "replayTab.comments.pullPrompt",
+        "title": "Comments: Pull into Sandbox Prompt",
+        "category": "Replay Tab"
+      },
+      {
+        "command": "replayTab.comments.clear",
+        "title": "Comments: Clear All",
+        "category": "Replay Tab"
+      },
+      {
+        "command": "replayTab.comments.nextBlock",
+        "title": "Comments: Keep for Next Block",
+        "category": "Replay Tab"
+      },
+      {
+        "command": "replayTab.cancelDisclosure",
+        "title": "Cancel Replay",
+        "category": "Replay Tab"
+      },
+      {
+        "command": "replayTab.runNextStep",
+        "title": "Run Next Step",
+        "category": "Replay Tab"
+      },
+      {
+        "command": "replayTab.startOllama",
+        "title": "Start Ollama (ollama serve in a terminal)",
+        "category": "Replay Tab"
+      },
+      {
+        "command": "replayTab.guide.runStepAt",
+        "title": "Run This Step",
+        "icon": "$(play)"
+      },
+      {
+        "command": "replayTab.guide.skipStepAt",
+        "title": "Skip This Step",
+        "icon": "$(debug-step-over)"
+      },
+      {
+        "command": "replayTab.continueDisclosure",
+        "title": "Continue Replay (after editing)",
+        "category": "Replay Tab"
+      }
+    ],
+    "views": {
+      "explorer": [
+        {
+          "id": "replayTab.guideSteps",
+          "name": "Replay Guide",
+          "when": "replayTab.guideLoaded"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "replayTab.diffReplayAcceptDecoration",
+        "key": "tab",
+        "when": "editorTextFocus && replayTab.diffDecorationActive && !suggestWidgetVisible && !inlineSuggestionVisible"
+      },
+      {
+        "command": "replayTab.acceptRewriteClear",
+        "key": "tab",
+        "when": "editorTextFocus && replayTab.rewriteStrikeActive && !suggestWidgetVisible && !inlineSuggestionVisible"
+      },
+      {
+        "command": "replayTab.continueDisclosure",
+        "key": "tab",
+        "when": "editorTextFocus && replayTab.disclosureDiverged && !suggestWidgetVisible && !inlineSuggestionVisible"
+      },
+      {
+        "command": "replayTab.cancelDisclosure",
+        "key": "escape",
+        "when": "editorTextFocus && (replayTab.disclosureActive || replayTab.diffDecorationActive || replayTab.rewriteStrikeActive) && !inlineSuggestionVisible && !suggestWidgetVisible"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "replayTab.comments.add",
+          "when": "false"
+        },
+        {
+          "command": "replayTab.guide.runStepAt",
+          "when": "false"
+        },
+        {
+          "command": "replayTab.guide.skipStepAt",
+          "when": "false"
+        },
+        {
+          "command": "replayTab.continueDisclosure",
+          "when": "false"
+        }
+      ],
+      "comments/commentThread/context": [
+        {
+          "command": "replayTab.comments.add",
+          "group": "inline",
+          "when": "commentController == replayTab.comments"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "replayTab.guide.runStepAt",
+          "when": "view == replayTab.guideSteps && viewItem == guideStep",
+          "group": "inline@1"
+        },
+        {
+          "command": "replayTab.guide.skipStepAt",
+          "when": "view == replayTab.guideSteps && viewItem == guideStep",
+          "group": "inline@2"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Replay Tab",
+      "properties": {
+        "replayTab.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable inline autocomplete suggestions."
+        },
+        "replayTab.apiBase": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "Base URL of the local Ollama server."
+        },
+        "replayTab.model": {
+          "type": "string",
+          "default": "qwen2.5-coder:1.5b-base",
+          "description": "Ollama model tag. Use a FIM-capable BASE model (not -instruct). e.g. qwen2.5-coder:1.5b-base, codestral:latest."
+        },
+        "replayTab.promptModel": {
+          "type": "string",
+          "default": "qwen2.5-coder:7b-instruct",
+          "description": "INSTRUCT model used to turn collated replay comments into a sandbox-agent prompt (the surfacing layer). Must be an -instruct model, not the FIM base model."
+        },
+        "replayTab.template": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "qwen",
+            "codestral",
+            "deepseek",
+            "starcoder"
+          ],
+          "default": "auto",
+          "description": "FIM prompt template. 'auto' infers from the model name."
+        },
+        "replayTab.maxTokens": {
+          "type": "number",
+          "default": 256,
+          "description": "Maximum tokens to generate per completion (num_predict)."
+        },
+        "replayTab.temperature": {
+          "type": "number",
+          "default": 0.01,
+          "description": "Sampling temperature. Low values give stable, deterministic completions."
+        },
+        "replayTab.debounceMs": {
+          "type": "number",
+          "default": 300,
+          "description": "Delay after the last keystroke before requesting a completion."
+        },
+        "replayTab.prefixChars": {
+          "type": "number",
+          "default": 3000,
+          "description": "Characters of context kept before the cursor."
+        },
+        "replayTab.suffixChars": {
+          "type": "number",
+          "default": 1000,
+          "description": "Characters of context kept after the cursor."
+        },
+        "replayTab.multiline": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow multi-line completions. Disable for single-line-only suggestions."
+        },
+        "replayTab.guidePath": {
+          "type": "string",
+          "default": "",
+          "description": "Path or glob to a replay guide (.md). Empty scans the workspace's replay-guides/ folder."
+        },
+        "replayTab.sandboxRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the sandbox tree the guide replays from (the 'after' state). A lean guide carries no code fences; the runner resolves each step's After bytes from <sandboxRoot>/<step file> by symbol. Before bytes come from the open workspace file."
+        },
+        "replayTab.sandboxParent": {
+          "type": "string",
+          "default": "",
+          "description": "Folder containing agent sandboxes, offered by Start Replay. Empty defaults to ~/sandbox."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.21.0",
+    "typescript": "^5.6.3"
+  },
+  "dependencies": {
+    "tree-sitter": "^0.22.4",
+    "tree-sitter-rust": "^0.24.0"
+  }
+}
