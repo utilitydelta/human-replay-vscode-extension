@@ -40,7 +40,8 @@ fs.writeFileSync(
     `export { planCreateInsertion, separatorToInsert, splitLeadingPad } from "../src/disclosure/insertion";\n` +
     `export { walkableSource } from "../src/disclosure/walk";\n` +
     `export { lineDiffSteps } from "../src/disclosure/lineDiff";\n` +
-    `export { resolveStepNoTree } from "../src/disclosure/replay";\n`,
+    `export { resolveStepNoTree } from "../src/disclosure/replay";\n` +
+    `export { planFileWalk } from "../src/disclosure/fileWalk";\n`,
 );
 esbuild.buildSync({
   entryPoints: [entry],
@@ -50,7 +51,7 @@ esbuild.buildSync({
   platform: "node",
   external: ["tree-sitter", "tree-sitter-rust", "tree-sitter-c-sharp", "tree-sitter-typescript", "tree-sitter-python", "@tree-sitter-grammars/tree-sitter-markdown", "tree-sitter-html", "tree-sitter-css"],
 });
-const { parseGuide, extractSymbol, stepAlreadyLanded, classifyReplay, buildReplaySteps, resolveStep, parseRoot, languageForFile, planCreateInsertion, separatorToInsert, splitLeadingPad, walkableSource, lineDiffSteps, resolveStepNoTree } =
+const { parseGuide, extractSymbol, stepAlreadyLanded, classifyReplay, buildReplaySteps, resolveStep, parseRoot, languageForFile, planCreateInsertion, separatorToInsert, splitLeadingPad, walkableSource, lineDiffSteps, resolveStepNoTree, planFileWalk } =
   require(bundle);
 const cleanup = () => {
   fs.rmSync(bundle, { force: true });
@@ -130,8 +131,17 @@ for (const step of guide.steps) {
     } else if (targetText !== undefined) {
       note(step, "CONFLICT", `${rel} exists in the target and differs — replay will block`);
     } else {
-      simulated.set(rel, sandboxText);
-      note(step, "ok", `${sandboxText.length} bytes`);
+      // The runner's exact file walk: the segments must rebuild the sandbox
+      // file byte-exact, or a Tab at the keyboard would land wrong bytes.
+      const segs = planFileWalk(sandboxText, languageForFile(rel));
+      const rebuilt = segs.map((s) => s.sep + s.body).join("");
+      if (rebuilt !== sandboxText) {
+        failures.push(step.id);
+        note(step, "FAIL", `file walk is not byte-exact (${segs.length} segment(s))`);
+      } else {
+        simulated.set(rel, sandboxText);
+        note(step, "ok", `${sandboxText.length} bytes, ${segs.length} segment(s)`);
+      }
     }
     continue;
   }
