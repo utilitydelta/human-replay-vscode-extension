@@ -20,7 +20,7 @@ const EXTERNALS = ["tree-sitter", "tree-sitter-rust", "tree-sitter-c-sharp", "tr
 const bundle = path.join(__dirname, ".container-walk.bundle.cjs");
 fs.writeFileSync(
   path.join(__dirname, ".container-walk.entry.ts"),
-  `export { computeSteps, walkableSource } from "../src/disclosure/walk";\n` +
+  `export { computeSteps, walkableSource, cleanWalkRegion } from "../src/disclosure/walk";\n` +
     `export { RUST, CSHARP, TYPESCRIPT, PYTHON } from "../src/disclosure/language";\n`,
 );
 esbuild.buildSync({
@@ -31,7 +31,7 @@ esbuild.buildSync({
   platform: "node",
   external: EXTERNALS,
 });
-const { computeSteps, walkableSource, RUST, CSHARP, TYPESCRIPT, PYTHON } = require(bundle);
+const { computeSteps, walkableSource, cleanWalkRegion, RUST, CSHARP, TYPESCRIPT, PYTHON } = require(bundle);
 test.after(() => {
   fs.rmSync(bundle, { force: true });
   fs.rmSync(path.join(__dirname, ".container-walk.entry.ts"), { force: true });
@@ -102,4 +102,26 @@ test("a container walk opens shape-first: the shell precedes its members", () =>
 test("no-create-walk languages stay non-walkable", () => {
   const py = `class Store:\n    def add(self, x):\n        self.x = x\n`;
   assert.strictEqual(walkableSource(py, PYTHON), false, "python has no create walk");
+});
+
+test("recovery bareText: the first step carries its leading trivia", () => {
+  // A recovery-landed first step must not drop the symbol's doc comments —
+  // trivia is the symbol's bytes (the DiscountMath shell landed commentless).
+  const src = `// Money helpers in one place.\npublic static class DiscountMath\n{\n    public static decimal RoundToCents(decimal amount)\n    {\n        return Math.Round(amount, 2);\n    }\n}`;
+  const steps = computeSteps(src, CSHARP);
+  assert.ok(steps[0].bareText.startsWith("// Money helpers in one place."), "prefix rides step 0's bareText");
+  assert.ok(steps[0].bareText.trimEnd().endsWith("}"), "and it is still the container shell");
+  assert.ok(!steps[1].bareText.startsWith("//"), "later steps carry only their own bytes");
+});
+
+test("cleanWalkRegion: a dirty parse yields no verdict, a clean one yields the region", () => {
+  // The human's own not-yet-valid code (a syntax the grammar doesn't know)
+  // makes error recovery absorb it into neighboring nodes and poisons every
+  // container key — the walk must say \"no verdict\", never the wrong container.
+  const poisoned = `public struct foobar(string hello);\n\npublic static class DiscountMath\n{\n    \n}\n`;
+  assert.strictEqual(cleanWalkRegion(poisoned, CSHARP), undefined, "erroring tail → undefined");
+
+  const clean = `public static class DiscountMath\n{\n    \n}\n`;
+  const region = cleanWalkRegion(clean, CSHARP);
+  assert.ok(region !== undefined && region.trimEnd().endsWith("}"), "clean tail → the walked node's region");
 });

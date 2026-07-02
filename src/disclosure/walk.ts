@@ -85,6 +85,21 @@ export function findWalkStart(node: SyntaxNode, spec: LanguageSpec = RUST): Synt
   return null;
 }
 
+// The walk region's live text — from the region start through the end of the
+// walked node — or undefined when there is NO VERDICT: no walkable node, or a
+// dirty parse. Tree-sitter's error recovery absorbs the human's own (possibly
+// not-yet-valid) code into neighboring nodes, so every container key computed
+// from an erroring tree is poison — a struct the grammar doesn't know yet made
+// the eligibility check read the wrong container and dead-end the walk. No
+// verdict means the recovery ghost offers at the cursor and the human decides
+// (invariant 2), exactly like the no-walkable-node case.
+export function cleanWalkRegion(tail: string, spec: LanguageSpec = RUST): string | undefined {
+  const root = parserFor(spec).parse(tail).rootNode as unknown as SyntaxNode;
+  if (root.hasError) return undefined;
+  const start = findWalkStart(root, spec);
+  return start ? tail.slice(0, start.endIndex) : undefined;
+}
+
 // The function named `name`, in pre-order — where a modify/delete step's symbol
 // already lives, so the guide runner can park the cursor on it. `src` is the
 // buffer the node indexes into (to read the name field).
@@ -255,12 +270,14 @@ export function computeSteps(src: string, spec: LanguageSpec = RUST): Step[] {
   emit(start, 0, prefix, "ROOT");
 
   // cursorOffset of step i = insertPos of step i+1 (the next insertion point);
-  // last step's cursor lands at the end of its own insert.
+  // last step's cursor lands at the end of its own insert. The first step's
+  // recovery bareText carries the prefix: doc comments and attributes are the
+  // symbol's bytes, and a recovery-landed first step must not drop them.
   return raw.map((r, i) => ({
     insert: r.insert,
     kind: r.kind,
     parentKey: r.parentKey,
-    bareText: r.bareText,
+    bareText: i === 0 ? prefix + r.bareText : r.bareText,
     insertOffset: r.insertPos,
     cursorOffset: i + 1 < raw.length ? raw[i + 1].insertPos : r.insertPos + r.insert.length,
   }));

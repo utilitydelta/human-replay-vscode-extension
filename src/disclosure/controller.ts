@@ -1,9 +1,8 @@
 import * as vscode from "vscode";
-import { computeSteps, findWalkStart } from "./walk";
+import { cleanWalkRegion, computeSteps } from "./walk";
 import { DisclosureSession } from "./session";
 import { appendEdit, innermostContainerKey } from "./anchoredInsert";
 import { buildRecoveryGhost } from "./recoveryGhost";
-import { parseRoot } from "./diff";
 import { LanguageSpec, RUST } from "./language";
 import { revealCursor } from "./reveal";
 import { Retrospective } from "../retrospective/retrospective";
@@ -402,13 +401,14 @@ export class DisclosureController {
     void vscode.commands.executeCommand("editor.action.inlineSuggest.trigger");
   }
 
-  // The live symbol text (from the anchor to the end of the function it builds),
-  // so the re-anchor resolves against what the human actually has now.
+  // The live walk-region text (from the anchor to the end of the walked node),
+  // so the re-anchor resolves against what the human actually has now. A dirty
+  // parse returns undefined — no verdict — so eligibility and the climb-out
+  // guard fall back to offering at the cursor instead of dead-ending on a
+  // container key poisoned by error recovery.
   private extractSymbol(document: vscode.TextDocument): string | undefined {
     if (!this.session) return undefined;
-    const tail = document.getText().slice(this.session.anchorOffset);
-    const fn = findWalkStart(parseRoot(tail, this.session.spec), this.session.spec);
-    return fn ? tail.slice(0, fn.endIndex) : undefined;
+    return cleanWalkRegion(document.getText().slice(this.session.anchorOffset), this.session.spec);
   }
 
   // Fallback when the recovery insert ghost can't render: Tab (gated on no inline
