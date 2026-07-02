@@ -108,6 +108,10 @@ const note = (step, status, detail = "") =>
 // The sequential dry-run state: target texts as they stand after the steps
 // validated so far. Reads fall through to disk for untouched files.
 const simulated = new Map();
+// Files a create-file step materialized. A decomposed new file (skeleton +
+// symbol steps) must END as the sandbox file — a gap means the generator
+// forgot a symbol, and the human would finish the replay with a broken file.
+const createdFiles = new Set();
 const targetTextFor = (rel) => (simulated.has(rel) ? simulated.get(rel) : read(path.join(targetRoot, rel)));
 
 // Land a step's outcome in the dry-run state: the target symbol's bytes become
@@ -123,20 +127,27 @@ for (const step of guide.steps) {
   const sandboxText = read(path.join(sandboxRoot, rel));
 
   if (step.action === "create-file") {
-    if (sandboxText === undefined) {
+    // A fenced create-file lands its After fence — the file's SKELETON, grown
+    // by the symbol create steps that follow. Unfenced lands the whole file.
+    const bytes = step.after ?? sandboxText;
+    const skeleton = step.after !== undefined;
+    if (bytes === undefined) {
       failures.push(step.id);
       note(step, "FAIL", `sandbox file ${rel} unreadable`);
-    } else if (stepAlreadyLanded("create-file", targetText, sandboxText)) {
-      note(step, "landed", "target file already byte-identical");
+    } else if (skeleton && sandboxText !== undefined && !sandboxText.startsWith(bytes)) {
+      failures.push(step.id);
+      note(step, "FAIL", `skeleton fence is not a prefix of the sandbox file — the symbol steps can never converge`);
+    } else if (skeleton ? targetText !== undefined && targetText.startsWith(bytes) : stepAlreadyLanded("create-file", targetText, bytes)) {
+      note(step, "landed", skeleton ? "target already carries the skeleton" : "target file already byte-identical");
     } else if (targetText !== undefined) {
       note(step, "CONFLICT", `${rel} exists in the target and differs — replay will block`);
     } else {
-      // The runner's exact file walk: the segments must rebuild the sandbox
-      // file byte-exact, or a Tab at the keyboard would land wrong bytes.
+      // The runner's exact file walk: the segments must rebuild the step's
+      // bytes exactly, or a Tab at the keyboard would land wrong bytes.
       const fileSpec = languageForFile(rel);
-      const segs = planFileWalk(sandboxText, fileSpec);
+      const segs = planFileWalk(bytes, fileSpec);
       const rebuilt = segs.map((s) => s.sep + s.body).join("");
-      if (rebuilt !== sandboxText) {
+      if (rebuilt !== bytes) {
         failures.push(step.id);
         note(step, "FAIL", `file walk is not byte-exact (${segs.length} segment(s))`);
       } else {
@@ -146,8 +157,9 @@ for (const step of guide.steps) {
           const { content } = splitTrailing(splitLeadingPad(s.body).rest);
           return fileSpec && content !== "" && walkableSource(content, fileSpec);
         }).length;
-        simulated.set(rel, sandboxText);
-        note(step, "ok", `${sandboxText.length} bytes, ${segs.length} segment(s) (${walks} walk, ${segs.length - walks} block)`);
+        simulated.set(rel, bytes);
+        createdFiles.add(rel);
+        note(step, "ok", `${bytes.length} bytes${skeleton ? " (skeleton)" : ""}, ${segs.length} segment(s) (${walks} walk, ${segs.length - walks} block)`);
       }
     }
     continue;
@@ -265,6 +277,18 @@ for (const step of guide.steps) {
   } else {
     simulated.set(rel, spliceBytes(targetText, before, after));
     note(step, "ok", `${plan.strategy} (survival ${Math.round(plan.survival * 100)}%, ${seq.ops} ops${plan.strategy === "surgical" ? ", sequential byte-exact" : ""})`);
+  }
+}
+
+// Completeness: every file this guide creates must end byte-identical to the
+// sandbox once all its steps have run. Scoped to created files — pre-existing
+// target files can drift for reasons outside this guide.
+for (const rel of createdFiles) {
+  const finalText = simulated.get(rel);
+  const sandboxText = read(path.join(sandboxRoot, rel));
+  if (sandboxText !== undefined && finalText !== sandboxText) {
+    failures.push(rel);
+    console.log(`\n  FAIL      ${rel} — created file ends ${finalText.length} bytes vs sandbox ${sandboxText.length}: the guide's steps don't rebuild it whole (missing symbol steps or a final patch)`);
   }
 }
 

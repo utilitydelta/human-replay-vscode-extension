@@ -246,6 +246,16 @@ export class GuideRunner {
           ? this.readFileFromDisk(path.join(root, rel))
           : this.readSymbolFromDisk(path.join(root, rel), step.symbol, spec!);
       const target = read(workspaceRoot);
+      // A skeleton (fenced) create-file is landed once the target begins with
+      // it — later symbol steps grow the file past the skeleton.
+      if (step.action === "create-file" && step.after !== undefined) {
+        if (target !== undefined && target.startsWith(step.after)) {
+          this.pc.markDone(i);
+          landed++;
+          this.output.appendLine(`[guide] step ${step.id} already landed (target carries the skeleton) — marked done`);
+        }
+        return;
+      }
       const after = sandbox ? read(sandbox) : undefined;
       if (stepAlreadyLanded(step.action, target, after)) {
         this.pc.markDone(i);
@@ -427,21 +437,29 @@ export class GuideRunner {
   }
 
   // Disclose a brand-new file segment by segment — the file walk. The plan cuts
-  // the sandbox bytes into blank-line groups (fileWalk.ts, byte-exact); each
-  // segment lands as one gesture: the descend-and-fill walk for a bare function,
-  // the block ghost otherwise, a single patch hunk for a file with no grammar.
-  // The bytes are the real sandbox file verbatim (invariant 1). A target file
-  // that already exists resumes at a segment boundary when it is a prefix of the
-  // sandbox bytes; anything else is a genuine conflict — blocked, never
-  // overwritten (invariant 2).
+  // the bytes into blank-line groups (fileWalk.ts, byte-exact); each segment
+  // lands as one gesture: the descend-and-fill walk for a bare function, the
+  // block ghost otherwise, a single patch hunk for a file with no grammar.
+  //
+  // The bytes are the whole sandbox file — or, when the step embeds an After
+  // fence, that fence: the file's SKELETON (header, usings, frame), with the
+  // rest of the file arriving as symbol create steps that carry their own Why
+  // and retrospective. Fences win over file resolution, like every other step.
+  // Either way the bytes are real sandbox bytes (invariant 1). A target file
+  // that already exists resumes at a segment boundary when it is a prefix;
+  // anything else is a genuine conflict — blocked, never overwritten
+  // (invariant 2).
   private async runCreateFile(index: number, step: ReplayStep, wasMidFileWalk = false): Promise<void> {
     const rel = step.file.split(":")[0];
-    const root = this.sandboxRoot;
-    if (!root) {
-      vscode.window.showWarningMessage(`Human Replay: step ${step.id} needs a sandbox to read ${rel} from — run Start Replay or set humanReplay.sandboxRoot.`);
-      return;
+    let bytes = step.after;
+    if (bytes === undefined) {
+      const root = this.sandboxRoot;
+      if (!root) {
+        vscode.window.showWarningMessage(`Human Replay: step ${step.id} needs a sandbox to read ${rel} from — run Start Replay or set humanReplay.sandboxRoot.`);
+        return;
+      }
+      bytes = this.readFileFromDisk(path.join(root, rel));
     }
-    const bytes = this.readFileFromDisk(path.join(root, rel));
     if (bytes === undefined) {
       vscode.window.showWarningMessage(`Human Replay: step ${step.id} can't read ${rel} from the sandbox.`);
       return;
@@ -469,7 +487,12 @@ export class GuideRunner {
     this.pc.begin(index);
     this.changed();
 
-    if (existing === bytes || bytes === "") {
+    // A skeleton (fenced) create-file is landed once the target BEGINS with it —
+    // the symbol steps that follow grow the file past the skeleton, and their
+    // growth must not un-land this step. A whole-file step stays byte-equality.
+    const landed =
+      existing !== undefined && (step.after !== undefined ? existing.startsWith(bytes) : existing === bytes);
+    if (landed || bytes === "") {
       // Already landed, or an empty sandbox file — nothing to disclose. Create
       // the empty file if needed, mark done, flow.
       if (existing === undefined) {
@@ -480,7 +503,7 @@ export class GuideRunner {
       this.pc.markDone(index);
       this.changed();
       await this.saveFileWalkDoc(targetUri);
-      this.output.appendLine(`[guide] step ${step.id}: ${rel} ${existing === bytes ? "already matches the sandbox" : "is empty in the sandbox"} — marked done`);
+      this.output.appendLine(`[guide] step ${step.id}: ${rel} ${landed ? "already carries this step's bytes" : "is empty in the sandbox"} — marked done`);
       this.flowInto(index);
       return;
     }

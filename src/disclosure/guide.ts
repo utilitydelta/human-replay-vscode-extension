@@ -17,8 +17,12 @@ import { Invariant, Retrospective } from "../retrospective/retrospective";
 
 // "create-file" discloses a brand-new file via the file walk (fileWalk.ts):
 // one gesture per blank-line group of top-level items, the full descend-and-fill
-// walk inside bare functions. The step is still whole-file in the guide — the
-// engine owns the cut, not the author.
+// walk inside bare functions. Unfenced, the step is the whole sandbox file —
+// the engine owns the gesture cut, the author owns the teaching cut. A file
+// with more than one teaching moment (an error type, a helper, the engine)
+// instead embeds an After fence carrying only the file's SKELETON (header,
+// usings, frame); the remaining symbols arrive as ordinary create steps, each
+// with its own Why and retrospective.
 export type StepAction = "create" | "modify" | "delete" | "create-file" | "patch";
 
 export interface ReplayStep {
