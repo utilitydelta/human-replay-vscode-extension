@@ -26,8 +26,9 @@ A change that violates one of these is drift, not a feature.
 - **The human decides; the AST proposes.** Surgical vs rewrite, step routing,
   resume verdicts — all computed model-free and ratified by the human at the
   keyboard.
-- **Opt-in model layer.** Off on first open. Never auto-spawn Ollama; detect
-  and guide when it's unreachable.
+- **Opt-in model layer.** Off on first open. Never auto-spawn Ollama and never
+  auto-pull a model; detect and guide — one-click gestures (start the server,
+  download the model) the human ratifies.
 
 ## Conventions
 
@@ -66,7 +67,8 @@ A change that violates one of these is drift, not a feature.
   Surfacing: `comments.ts`, `commentAnchor.ts`, `promptgen.ts`,
   `actionability.ts`.
 - `src/` — FIM autocomplete (completionProvider, ollama, templates,
-  postprocess, config) beside the extension entry.
+  postprocess, config, modelPull for the one-click download) beside the
+  extension entry.
 - `test/*.test.cjs` — headless oracles, parameterized over corpora, each naming
   the invariant it proves.
 - `scripts/validate-guide.js` — the guide oracle: parses with the real parser,
