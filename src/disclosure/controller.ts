@@ -62,6 +62,7 @@ export class DisclosureController {
   // accept). currentItem returns nothing while false, so VS Code's per-keystroke auto
   // re-query of the provider doesn't flash a ghost on every character.
   private recoverySettled = false;
+  private continuing = false; // Tab re-entrancy latch for the re-anchored continue
 
   constructor(private readonly output: vscode.OutputChannel) {}
 
@@ -394,6 +395,18 @@ export class DisclosureController {
   // edits. A collision (the parent is gone) surfaces; it never guesses. The
   // reposition re-triggers the next ghost via onSelectionChanged.
   async continueWalk(editor: vscode.TextEditor): Promise<void> {
+    // Tab re-entrancy latch: the step only advances after the awaited edit, so a
+    // second Tab mid-flight would append the same node twice.
+    if (this.continuing) return;
+    this.continuing = true;
+    try {
+      await this.continueWalkInner(editor);
+    } finally {
+      this.continuing = false;
+    }
+  }
+
+  private async continueWalkInner(editor: vscode.TextEditor): Promise<void> {
     const s = this.session;
     const step = s?.current();
     if (!s || !step) return;

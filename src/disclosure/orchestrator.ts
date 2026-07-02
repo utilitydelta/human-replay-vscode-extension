@@ -85,10 +85,13 @@ export class ReplayOrchestrator {
   async acceptRewriteClear(): Promise<void> {
     const p = this.pending;
     if (!p) return;
+    // Claim before awaiting: a second Tab arriving while the delete is in flight
+    // must find nothing pending, or the range gets deleted twice — the second
+    // pass eating whatever bytes slid into it.
+    this.pending = undefined;
     await p.editor.edit((b) => b.delete(p.range));
     p.editor.setDecorations(this.strike, []);
     void vscode.commands.executeCommand("setContext", REWRITE_CONTEXT, false);
-    this.pending = undefined;
     p.editor.selection = new vscode.Selection(p.range.start, p.range.start);
     revealCursor(p.editor, p.range.start);
     // A delete step has no new symbol to disclose — clearing the struck old one is

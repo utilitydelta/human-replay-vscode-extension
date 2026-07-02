@@ -116,6 +116,11 @@
         "when": "editorTextFocus && humanReplay.disclosureDiverged && !suggestWidgetVisible && !inlineSuggestionVisible"
       },
       {
+        "command": "humanReplay.nudgeGhost",
+        "key": "tab",
+        "when": "editorTextFocus && humanReplay.disclosureActive && !humanReplay.disclosureDiverged && !suggestWidgetVisible && !inlineSuggestionVisible"
+      },
+      {
         "command": "humanReplay.cancelDisclosure",
         "key": "escape",
         "when": "editorTextFocus && (humanReplay.disclosureActive || humanReplay.diffDecorationActive || humanReplay.rewriteStrikeActive) && !inlineSuggestionVisible && !suggestWidgetVisible"

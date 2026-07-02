@@ -240,6 +240,15 @@ export function activate(context: vscode.ExtensionContext) {
       if (editor) void disclosure.continueWalk(editor);
     }),
   );
+  // Mid-walk, between an accept and the next ghost, a too-fast Tab would fall
+  // through to the editor's indent action — literal tab bytes typed into the
+  // half-built symbol (the fast-Tab corruption). While the walk is active and
+  // no ghost is up, Tab nudges the ghost instead of typing.
+  context.subscriptions.push(
+    vscode.commands.registerCommand("humanReplay.nudgeGhost", () => {
+      void vscode.commands.executeCommand("editor.action.inlineSuggest.trigger");
+    }),
+  );
   context.subscriptions.push(
     vscode.commands.registerCommand("humanReplay.guide.runStepAt", async (node?: { index: number }) => {
       if (!node) return;

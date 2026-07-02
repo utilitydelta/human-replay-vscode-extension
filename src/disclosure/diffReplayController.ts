@@ -65,6 +65,7 @@ export class DiffReplayController {
   // is, so VS Code's per-keystroke auto re-query doesn't flash the ghost.
   private diverged = false;
   private typing = false;
+  private accepting = false; // Tab re-entrancy latch: one decoration accept lands at a time
   private settleTimer: ReturnType<typeof setTimeout> | undefined;
   // The human edited the current step's own line (its doomed range) — they're taking
   // over THIS hunk. A collision there must HOLD, never alarm: surfacing is reserved
@@ -459,6 +460,19 @@ export class DiffReplayController {
   // since the decoration was shown — so the swap lands on the current range, and a
   // structural collision surfaces instead of clobbering the wrong span.
   async acceptDecoration(editor: vscode.TextEditor): Promise<void> {
+    // Tab faster than an edit resolves and the same step lands twice: everything
+    // below re-resolves the CURRENT step, and index only advances after the
+    // awaited edit. One accept in flight at a time; extra Tabs drop.
+    if (this.accepting) return;
+    this.accepting = true;
+    try {
+      await this.acceptDecorationInner(editor);
+    } finally {
+      this.accepting = false;
+    }
+  }
+
+  private async acceptDecorationInner(editor: vscode.TextEditor): Promise<void> {
     const s = this.session;
     if (!s) return; // only reachable while a decoration is shown (DECORATION_CONTEXT set)
     this.clearSettle();
