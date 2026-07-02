@@ -105,7 +105,15 @@ export class GuideRunner {
     if (fw) {
       fw.at++;
       if (fw.at < fw.segments.length) {
-        void this.runNextSegment();
+        // Fire-and-forget like the auto-advance — but never silently. A segment
+        // that dies unlogged strands the step in-flight with no engine armed
+        // and Tab falling through to an indent.
+        this.runNextSegment().catch((e) => {
+          const msg = e instanceof Error ? e.message : String(e);
+          this.output.appendLine(`[guide] step ${fw.stepId}: segment ${fw.at + 1} failed — ${msg}`);
+          vscode.window.showErrorMessage(`Human Replay: file-walk segment failed — ${msg}. Marked blocked; re-run or skip the step.`);
+          this.markCurrentBlocked();
+        });
         return;
       }
       this.fileWalk = undefined;
@@ -523,7 +531,8 @@ export class GuideRunner {
     if (lead) {
       const opened = await vscode.window.showTextDocument(doc, { preview: false });
       const end = doc.positionAt(doc.getText().length);
-      await opened.edit((b) => b.insert(end, lead));
+      const applied = await opened.edit((b) => b.insert(end, lead));
+      if (!applied) throw new Error(`separator edit rejected on segment ${fw.at + 1}`);
     }
     const cursor = doc.positionAt(doc.getText().length);
     const editor = await this.parkCursor(doc, cursor);

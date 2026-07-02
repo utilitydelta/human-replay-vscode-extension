@@ -442,7 +442,15 @@ export class DiffReplayController {
     s.lastServed = { range: resolved.range, text: resolved.text };
     editor.selection = new vscode.Selection(resolved.range.start, resolved.range.start);
     revealCursor(editor, resolved.range.start);
+    this.output.appendLine(
+      `[diff-replay] step ${s.index + 1}/${s.steps.length} armed: ${this.surfaceOf(s.steps[s.index])} ghost at line ${resolved.range.start.line + 1}`,
+    );
     void vscode.commands.executeCommand("editor.action.inlineSuggest.trigger");
+    // A trigger fired from inside the previous ghost's accept command can be
+    // swallowed by the inline-suggest controller mid-accept (the file-walk
+    // chains sessions accept-to-arm). One more nudge on the next tick lands
+    // after the accept settles; the provider gates it, so a stray is harmless.
+    setTimeout(() => void vscode.commands.executeCommand("editor.action.inlineSuggest.trigger"), 50);
   }
 
   // --- dramatic mode: render the change as a visual diff ---------------------

@@ -227,6 +227,10 @@ export class DisclosureController {
     // Cursor is already on step 0's anchor, so no selection change fires — trigger
     // the first ghost directly. Every later ghost rides onSelectionChanged.
     await vscode.commands.executeCommand("editor.action.inlineSuggest.trigger");
+    // When this start is chained from a previous ghost's accept (file-walk
+    // segments), the trigger above can be swallowed mid-accept — nudge again
+    // on the next tick. The position gate makes a stray harmless.
+    setTimeout(() => void vscode.commands.executeCommand("editor.action.inlineSuggest.trigger"), 50);
   }
 
   cancel(): void {
