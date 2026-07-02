@@ -28,6 +28,20 @@ export function separatorToInsert(text: string): string {
   return eolOf(text).repeat(Math.max(0, 2 - trailingNewlines));
 }
 
+/**
+ * Split the symbol's own first-line indent off its bytes. A symbol with leading
+ * trivia extracts from its LINE START, so its bytes begin with the line's
+ * indent — but a ghost that leads with indentation can't be Tab-accepted
+ * (VS Code's commit keybinding is gated on
+ * `inlineSuggestionHasIndentationLessThanTabSize`; Tab indents instead and the
+ * typed tab dismisses the ghost). The runner types `pad` as real buffer bytes
+ * and serves the ghost from `rest` — the landed bytes are identical.
+ */
+export function splitLeadingPad(sym: string): { pad: string; rest: string } {
+  const pad = /^[ \t]+/.exec(sym)?.[0] ?? "";
+  return { pad, rest: sym.slice(pad.length) };
+}
+
 export type CreatePlacement =
   /** Replace [start, end) of the target with `scaffold`, then park the cursor at
    *  `cursorAt` (post-edit offset, on a fresh line at column `indent`). */

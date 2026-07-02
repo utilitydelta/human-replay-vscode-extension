@@ -37,7 +37,7 @@ fs.writeFileSync(
     `export { resolveStep } from "../src/disclosure/replay";\n` +
     `export { parseRoot } from "../src/disclosure/diff";\n` +
     `export { languageForFile } from "../src/disclosure/language";\n` +
-    `export { planCreateInsertion, separatorToInsert } from "../src/disclosure/insertion";\n` +
+    `export { planCreateInsertion, separatorToInsert, splitLeadingPad } from "../src/disclosure/insertion";\n` +
     `export { walkableSource } from "../src/disclosure/walk";\n`,
 );
 esbuild.buildSync({
@@ -48,7 +48,7 @@ esbuild.buildSync({
   platform: "node",
   external: ["tree-sitter", "tree-sitter-rust", "tree-sitter-c-sharp", "tree-sitter-typescript", "tree-sitter-python", "@tree-sitter-grammars/tree-sitter-markdown", "tree-sitter-html", "tree-sitter-css"],
 });
-const { parseGuide, extractSymbol, stepAlreadyLanded, classifyReplay, buildReplaySteps, resolveStep, parseRoot, languageForFile, planCreateInsertion, separatorToInsert, walkableSource } =
+const { parseGuide, extractSymbol, stepAlreadyLanded, classifyReplay, buildReplaySteps, resolveStep, parseRoot, languageForFile, planCreateInsertion, separatorToInsert, splitLeadingPad, walkableSource } =
   require(bundle);
 const cleanup = () => {
   fs.rmSync(bundle, { force: true });
@@ -174,11 +174,13 @@ for (const step of guide.steps) {
       note(step, "FAIL", `target file ${rel} unreadable — a symbol create needs an existing file`);
     } else {
       // The runner's exact placement + surface decisions, against the dry-run
-      // target. Walk only for a bare fn; trivia-carrying and non-fn symbols land
-      // whole-symbol (the walk would silently drop doc comments/attributes).
+      // target. The symbol's own first-line indent is typed as pad bytes (a
+      // whitespace-leading ghost can't be Tab-accepted); the walk judges the
+      // rest at the pad's column.
       const placement = planCreateInsertion(targetText, sandboxText, step.symbol, spec);
       const indent = placement.kind === "container" ? placement.indent : 0;
-      const surface = walkableSource(after, spec, indent) ? "disclosure walk" : "whole-symbol";
+      const { pad, rest } = splitLeadingPad(after);
+      const surface = walkableSource(rest, spec, pad ? pad.length : indent) ? "disclosure walk" : "whole-symbol";
       if (placement.kind === "blocked") {
         failures.push(step.id);
         note(step, "FAIL", `placement blocked — ${placement.reason}`);

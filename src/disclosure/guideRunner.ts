@@ -6,7 +6,7 @@ import { DisclosureController } from "./controller";
 import { ReplayOrchestrator } from "./orchestrator";
 import { parseRoot } from "./diff";
 import { findItemByName, leadingTriviaStart, walkableSource, SyntaxNode } from "./walk";
-import { planCreateInsertion, separatorToInsert } from "./insertion";
+import { planCreateInsertion, separatorToInsert, splitLeadingPad } from "./insertion";
 import { ProgramCounter, StepStatus } from "./programCounter";
 import { extractSymbol, stepAlreadyLanded } from "./resume";
 import { LanguageSpec, languageForFile } from "./language";
@@ -453,16 +453,29 @@ export class GuideRunner {
         if (existing !== undefined) {
           this.output.appendLine(`[guide] step ${step.id}: ${step.symbol} already in target — resuming as diff-replay`);
           await this.orchestrator.start(editor, existing, after!, step.retro, true, spec);
-        } else if (!walkableSource(after!, spec, editor.selection.active.character)) {
+          break;
+        }
+        // The symbol's own first-line indent lands as typed bytes, not ghost
+        // bytes — a whitespace-leading ghost can't be Tab-accepted (see
+        // splitLeadingPad). Cursor moves past the pad so the walk's base
+        // column is the symbol's real column.
+        const { pad, rest } = splitLeadingPad(after!);
+        if (pad) {
+          const at = editor.selection.active;
+          await editor.edit((b) => b.insert(at, pad));
+          const moved = editor.document.positionAt(editor.document.offsetAt(at) + pad.length);
+          editor.selection = new vscode.Selection(moved, moved);
+        }
+        if (!walkableSource(rest, spec, editor.selection.active.character)) {
           // The walk can only rebuild a bare function — no walk for this language,
           // a non-fn item (struct/const/trait), or leading doc comments/attributes
           // the walk would drop. The whole symbol lands as one block ghost at the
           // parked cursor instead (real sandbox bytes, one Tab). The orchestrator's
           // no-walk guard routes this to the block-swap surface.
           this.output.appendLine(`[guide] step ${step.id}: not walkable — whole-symbol insert`);
-          await this.orchestrator.start(editor, "", after!, step.retro, true, spec);
+          await this.orchestrator.start(editor, "", rest, step.retro, true, spec);
         } else {
-          await this.disclosure.start(editor, after!, step.retro, spec);
+          await this.disclosure.start(editor, rest, step.retro, spec);
         }
         break;
       }
