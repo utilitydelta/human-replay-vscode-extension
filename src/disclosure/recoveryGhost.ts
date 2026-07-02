@@ -30,11 +30,18 @@ export function buildRecoveryGhost(
   let body: string;
   let caret: number;
   if (step.kind === "container") {
-    const nl = step.bareText.indexOf("\n");
-    const header = nl >= 0 ? step.bareText.slice(0, nl) : step.bareText;
+    // The shell is `<header incl. "{">\n}`. The header may span lines — C#
+    // puts the opening brace on its own line — so cut at the closing suffix,
+    // never at the first newline (that dropped C#'s `{` entirely), and indent
+    // the header's continuation lines like any other multi-line insert.
+    const raw = step.bareText.endsWith("\n}") ? step.bareText.slice(0, -2) : step.bareText;
+    const header = raw
+      .split("\n")
+      .map((l, i) => (i === 0 ? l : sp(baseIndent) + l))
+      .join("\n");
     const inner = baseIndent + INDENT;
     body = header + "\n" + sp(inner) + "\n" + sp(baseIndent) + "}";
-    caret = header.length + 1 + inner; // past `header{\n` + the inner indent
+    caret = header.length + 1 + inner; // past the shell's `{\n` + the inner indent
   } else {
     const lines = step.bareText.split("\n");
     body = lines.map((l, i) => (i === 0 ? l : sp(baseIndent) + l)).join("\n");

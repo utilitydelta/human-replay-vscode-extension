@@ -90,6 +90,18 @@ test("container at end of a code line: leading newline, close brace back at the 
   assert.strictEqual(buffer[caretAbs - 1], " ", "caret follows the inner indent");
 });
 
+test("container with the brace on its own line (C#): the { survives and indents", () => {
+  // bareText = header incl. "{" + "\n}". C# headers span two lines; cutting the
+  // header at the first newline dropped the brace entirely (the RoundToCents
+  // corruption, feedback.md).
+  const g = buildRecoveryGhost("    ", 4, container("public static decimal RoundToCents(decimal amount)\n{\n}"));
+  assert.strictEqual(g.text, "public static decimal RoundToCents(decimal amount)\n    {\n        \n    }");
+  // Caret descends onto the blank inner line, past the brace line.
+  const upToCaret = g.text.slice(0, g.caret);
+  assert.strictEqual(upToCaret.split("\n").length - 1, 2, "caret is on the inner line below the brace");
+  assert.ok(g.text.includes("{"), "the opening brace is in the ghost");
+});
+
 test("caret stays within the inserted text for both kinds", () => {
   for (const step of [leaf("a();"), container("if c {\n}")]) {
     const g = buildRecoveryGhost("  ", 2, step);
