@@ -59,10 +59,12 @@ A change that violates one of these is drift, not a feature.
 - `src/disclosure/` — the engine. Insert walk: `walk.ts`, `session.ts`,
   `controller.ts`. Edit-aware: `diff.ts`, `replay.ts`, `sequence.ts`,
   `strategy.ts`, `diffReplayController.ts`, `orchestrator.ts`. Patch steps
-  (line-grain, below symbol grain): `lineDiff.ts`. Guide:
-  `guide.ts` (parser), `guideRunner.ts` (program counter + routing + resume),
-  `resume.ts`, `programCounter.ts`, `guideTree.ts`. Surfacing: `comments.ts`,
-  `commentAnchor.ts`, `promptgen.ts`, `actionability.ts`.
+  (line-grain, below symbol grain): `lineDiff.ts`. File walk (create-file
+  discloses by blank-line groups): `fileWalk.ts`. Guide:
+  `guide.ts` (parser), `guideRunner.ts` (program counter + routing + resume +
+  phase-boundary pause), `resume.ts`, `programCounter.ts`, `guideTree.ts`.
+  Surfacing: `comments.ts`, `commentAnchor.ts`, `promptgen.ts`,
+  `actionability.ts`.
 - `src/` — FIM autocomplete (completionProvider, ollama, templates,
   postprocess, config) beside the extension entry.
 - `test/*.test.cjs` — headless oracles, parameterized over corpora, each naming
