@@ -38,6 +38,15 @@ export class ProgramCounter {
     return true;
   }
 
+  /** The in-flight walk was cancelled — nothing landed. The step keeps its prior
+   *  mark and position falls back to next(), so a stray completion event after
+   *  the cancel can't mark the step done. */
+  cancelInFlight(): boolean {
+    if (this.inFlight === undefined) return false;
+    this.inFlight = undefined;
+    return true;
+  }
+
   /** The in-flight walk hit a collision — mark it blocked (the human decides). */
   block(): boolean {
     if (this.inFlight === undefined) return false;

@@ -80,6 +80,13 @@ export class GuideRunner {
     if (this.pc.block()) this.changed();
   }
 
+  /** Cancel Replay: the caller tears the engines down; clear the counter's
+   *  in-flight mark so nothing can complete the cancelled step behind the
+   *  human's back. The step keeps its status for a re-run. */
+  cancelInFlight(): void {
+    if (this.pc.cancelInFlight()) this.changed();
+  }
+
   /** A step's interactive walk finished — advance the counter past it and flow
    *  straight into the next step (open it, park the cursor, show its first ghost),
    *  so the human tabs across step boundaries without clicking. Esc interrupts by
@@ -422,6 +429,19 @@ export class GuideRunner {
     const editor = await this.openTarget(step);
     if (!editor) return;
     const { before, after } = this.resolveStepBytes(editor, step, spec);
+
+    // Ground truth beats the click: a step whose outcome is already in the target
+    // has nothing to replay. Running it anyway would diff identical bytes into
+    // zero ops, instant-complete, and the auto-advance would teleport the human
+    // to the next pending step with no visible cause. Say so and mark it done.
+    const live = step.action === "create" ? this.symbolFrom(editor.document.getText(), step.symbol, spec) : before;
+    if (stepAlreadyLanded(step.action, live, after)) {
+      this.pc.markDone(index);
+      this.changed();
+      this.output.appendLine(`[guide] step ${step.id}: already matches the sandbox — marked done`);
+      vscode.window.showInformationMessage(`Human Replay: step ${step.id} already matches the sandbox — marked done.`);
+      return;
+    }
 
     // A step can't run without the bytes its action drives. Resolution fails when the
     // sandbox root isn't set, the file isn't there, or the symbol isn't a function the

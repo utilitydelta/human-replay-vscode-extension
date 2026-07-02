@@ -163,3 +163,13 @@ test("restore ignores indices past the guide's end (re-edited guide, stale snaps
   assert.strictEqual(pc.completedCount, 1);
   assert.strictEqual(pc.next(), 1);
 });
+
+test("cancelInFlight: nothing lands, and a stray complete() can't mark the step done", () => {
+  const pc = fresh(3);
+  pc.begin(1);
+  assert.ok(pc.cancelInFlight());
+  assert.strictEqual(pc.status(1), "pending", "the cancelled step keeps its prior status");
+  assert.strictEqual(pc.complete(), false, "a completion event after cancel is a no-op");
+  assert.strictEqual(pc.status(1), "pending");
+  assert.strictEqual(pc.cancelInFlight(), false, "cancel with nothing in flight reports so");
+});

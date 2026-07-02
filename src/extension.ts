@@ -180,6 +180,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("humanReplay.cancelDisclosure", () => {
       disclosure.cancel();
       orchestrator.cancelAll();
+      guideRunner.cancelInFlight(); // a stray completion must not mark the cancelled step done
     }),
   );
 
@@ -267,10 +268,18 @@ export function activate(context: vscode.ExtensionContext) {
   // position, then re-derive done-ness from the real bytes on both sides.
   const loadGuideFrom = async (uri: vscode.Uri): Promise<boolean> => {
     const md = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString("utf8");
+    // Read the saved position BEFORE load(): load fires changed() → persistPosition,
+    // and with the key still current a RE-load would clobber its own save with the
+    // freshly-reset counter. Parking the key while loading closes the race.
+    const saved = context.workspaceState.get<{ done?: number[]; skipped?: number[] }>(positionKey(uri));
+    currentGuideUri = undefined;
     const guide = guideRunner.load(md);
     currentGuideUri = uri;
-    const saved = context.workspaceState.get<{ done?: number[]; skipped?: number[] }>(positionKey(uri));
-    if (saved) guideRunner.restore(saved);
+    // Only skips restore from the snapshot — a skip is human intent the bytes can't
+    // derive. Done-ness re-derives from ground truth below (resume.ts's thesis):
+    // a step reverted out-of-band must fall back to pending, not stay green off a
+    // stale counter.
+    if (saved?.skipped?.length) guideRunner.restore({ skipped: saved.skipped });
     const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     const derived = root ? guideRunner.deriveLanded(root) : 0;
     updateGuideStatus();
