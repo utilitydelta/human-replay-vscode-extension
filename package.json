@@ -121,6 +121,11 @@
         "when": "editorTextFocus && humanReplay.disclosureActive && !humanReplay.disclosureDiverged && !suggestWidgetVisible && !inlineSuggestionVisible"
       },
       {
+        "command": "humanReplay.diffReplayNudge",
+        "key": "tab",
+        "when": "editorTextFocus && humanReplay.diffReplayActive && !humanReplay.diffDecorationActive && !suggestWidgetVisible && !inlineSuggestionVisible"
+      },
+      {
         "command": "humanReplay.cancelDisclosure",
         "key": "escape",
         "when": "editorTextFocus && (humanReplay.disclosureActive || humanReplay.diffDecorationActive || humanReplay.rewriteStrikeActive) && !inlineSuggestionVisible && !suggestWidgetVisible"

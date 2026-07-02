@@ -41,7 +41,7 @@ fs.writeFileSync(
     `export { walkableSource } from "../src/disclosure/walk";\n` +
     `export { lineDiffSteps } from "../src/disclosure/lineDiff";\n` +
     `export { resolveStepNoTree } from "../src/disclosure/replay";\n` +
-    `export { planFileWalk } from "../src/disclosure/fileWalk";\n`,
+    `export { planFileWalk, splitTrailing } from "../src/disclosure/fileWalk";\n`,
 );
 esbuild.buildSync({
   entryPoints: [entry],
@@ -51,7 +51,7 @@ esbuild.buildSync({
   platform: "node",
   external: ["tree-sitter", "tree-sitter-rust", "tree-sitter-c-sharp", "tree-sitter-typescript", "tree-sitter-python", "@tree-sitter-grammars/tree-sitter-markdown", "tree-sitter-html", "tree-sitter-css"],
 });
-const { parseGuide, extractSymbol, stepAlreadyLanded, classifyReplay, buildReplaySteps, resolveStep, parseRoot, languageForFile, planCreateInsertion, separatorToInsert, splitLeadingPad, walkableSource, lineDiffSteps, resolveStepNoTree, planFileWalk } =
+const { parseGuide, extractSymbol, stepAlreadyLanded, classifyReplay, buildReplaySteps, resolveStep, parseRoot, languageForFile, planCreateInsertion, separatorToInsert, splitLeadingPad, walkableSource, lineDiffSteps, resolveStepNoTree, planFileWalk, splitTrailing } =
   require(bundle);
 const cleanup = () => {
   fs.rmSync(bundle, { force: true });
@@ -133,14 +133,21 @@ for (const step of guide.steps) {
     } else {
       // The runner's exact file walk: the segments must rebuild the sandbox
       // file byte-exact, or a Tab at the keyboard would land wrong bytes.
-      const segs = planFileWalk(sandboxText, languageForFile(rel));
+      const fileSpec = languageForFile(rel);
+      const segs = planFileWalk(sandboxText, fileSpec);
       const rebuilt = segs.map((s) => s.sep + s.body).join("");
       if (rebuilt !== sandboxText) {
         failures.push(step.id);
         note(step, "FAIL", `file walk is not byte-exact (${segs.length} segment(s))`);
       } else {
+        // The runner's per-segment routing: walk when the content (trailing
+        // whitespace typed) rebuilds byte-exact, block ghost otherwise.
+        const walks = segs.filter((s) => {
+          const { content } = splitTrailing(splitLeadingPad(s.body).rest);
+          return fileSpec && content !== "" && walkableSource(content, fileSpec);
+        }).length;
         simulated.set(rel, sandboxText);
-        note(step, "ok", `${sandboxText.length} bytes, ${segs.length} segment(s)`);
+        note(step, "ok", `${sandboxText.length} bytes, ${segs.length} segment(s) (${walks} walk, ${segs.length - walks} block)`);
       }
     }
     continue;

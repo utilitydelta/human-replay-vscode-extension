@@ -54,6 +54,10 @@ interface Session {
 }
 
 const DECORATION_CONTEXT = "humanReplay.diffDecorationActive";
+// A diff-replay session is live. Gates the Tab-nudge keybinding: while a step
+// is armed on the native surface, a ghost-less Tab must nudge the ghost or
+// fall through to a real indent — never type bytes into the replay by accident.
+const ACTIVE_CONTEXT = "humanReplay.diffReplayActive";
 
 type ResolveResult =
   | { kind: "ok"; range: vscode.Range; text: string; cleanParse: boolean }
@@ -221,6 +225,7 @@ export class DiffReplayController {
     const anchorOffset = editor.document.offsetAt(at);
     const steps = lineMode ? lineDiffSteps(oldSrc, newSrc) : buildReplaySteps(oldSrc, newSrc, spec);
     this.session = { uri: editor.document.uri, anchorOffset, symbolLen: oldSrc.length, selfDelta: 0, steps, index: 0, retrospective, dramatic, spec, lineMode };
+    void vscode.commands.executeCommand("setContext", ACTIVE_CONTEXT, true);
     this.lastAcceptAt = undefined;
     this.diverged = false;
     this.typing = false;
@@ -243,8 +248,28 @@ export class DiffReplayController {
     const editor = vscode.window.activeTextEditor;
     if (editor) this.clearDecorations(editor);
     void vscode.commands.executeCommand("setContext", DECORATION_CONTEXT, false);
+    void vscode.commands.executeCommand("setContext", ACTIVE_CONTEXT, false);
     this.clearSettle();
     this.session = undefined;
+  }
+
+  /** Tab with no ghost up while a step is armed: re-trigger the ghost when the
+   *  cursor sits on the armed line, and report whether we did. The caller runs
+   *  the editor's default Tab when we didn't — Tab must never be a dead key,
+   *  and it must never type bytes into an armed replay line by accident (the
+   *  stray-indent corruption, feedback.md #5). */
+  async nudge(editor: vscode.TextEditor): Promise<boolean> {
+    const s = this.session;
+    const step = s?.steps[s.index];
+    if (!s || !step || this.typing) return false;
+    if (editor.document.uri.toString() !== s.uri.toString()) return false;
+    if (this.ridesDecoration(s, step)) return false; // decoration Tab owns that surface
+    const resolved = this.resolveCurrent(editor.document);
+    if (resolved.kind !== "ok" || !resolved.cleanParse) return false;
+    if (editor.selection.active.line !== resolved.range.start.line) return false;
+    this.output.appendLine("[diff-replay] tab nudged the ghost");
+    await vscode.commands.executeCommand("editor.action.inlineSuggest.trigger");
+    return true;
   }
 
   // After VS Code applied the accepted replacement: book the length delta, advance,
@@ -551,6 +576,7 @@ export class DiffReplayController {
     this.clearSettle();
     this.clearDecorations(editor);
     void vscode.commands.executeCommand("setContext", DECORATION_CONTEXT, false);
+    void vscode.commands.executeCommand("setContext", ACTIVE_CONTEXT, false);
     this.output.appendLine(`[diff-replay] complete (${s.steps.length} steps)`);
     const done = { uri: s.uri, anchorOffset: s.anchorOffset, symbolLen: s.symbolLen, retrospective: s.retrospective };
     this.session = undefined;

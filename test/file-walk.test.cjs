@@ -20,7 +20,9 @@ const EXTERNALS = ["tree-sitter", "tree-sitter-rust", "tree-sitter-c-sharp", "tr
 const bundle = path.join(__dirname, ".file-walk.bundle.cjs");
 fs.writeFileSync(
   path.join(__dirname, ".file-walk.entry.ts"),
-  `export { planFileWalk, resumeIndex } from "../src/disclosure/fileWalk";\n` +
+  `export { planFileWalk, resumeIndex, splitTrailing } from "../src/disclosure/fileWalk";\n` +
+    `export { walkableSource } from "../src/disclosure/walk";\n` +
+    `export { splitLeadingPad } from "../src/disclosure/insertion";\n` +
     `export { RUST, CSHARP, TYPESCRIPT, TSX, PYTHON, MARKDOWN, HTML, CSS } from "../src/disclosure/language";\n`,
 );
 esbuild.buildSync({
@@ -31,7 +33,7 @@ esbuild.buildSync({
   platform: "node",
   external: EXTERNALS,
 });
-const { planFileWalk, resumeIndex, RUST, CSHARP, TYPESCRIPT, TSX, PYTHON, MARKDOWN, HTML, CSS } = require(bundle);
+const { planFileWalk, resumeIndex, splitTrailing, walkableSource, splitLeadingPad, RUST, CSHARP, TYPESCRIPT, TSX, PYTHON, MARKDOWN, HTML, CSS } = require(bundle);
 test.after(() => {
   fs.rmSync(bundle, { force: true });
   fs.rmSync(path.join(__dirname, ".file-walk.entry.ts"), { force: true });
@@ -133,6 +135,52 @@ test("resume lands only on segment boundaries", () => {
     }
   }
   assert.strictEqual(resumeIndex(segs, "unrelated bytes"), undefined, "a foreign file is a conflict");
+});
+
+// Which surface each segment rides after the runner's trailing-whitespace split —
+// the file's final newline is typed, so a last segment holding a class or fn
+// must WALK, not fall back to a block ghost. One fixture per walk language plus
+// the no-create-walk negatives.
+const ROUTING = [
+  {
+    name: "csharp: comment + class walks; namespace line blocks",
+    spec: () => CSHARP,
+    walks: [false, true],
+    code: `namespace DemoShop;\n\n// First match wins.\npublic class DiscountEngine\n{\n    private const int Threshold = 5;\n\n    public decimal DiscountFor(Cart cart)\n    {\n        return 0m;\n    }\n}\n`,
+  },
+  {
+    name: "tsx: imports and interface block; exported component walks",
+    spec: () => TSX,
+    walks: [false, false, true],
+    code: `import { useState } from "react";\n\nexport interface Todo {\n  id: number;\n}\n\nexport default function TodoList() {\n  const [n, setN] = useState(0);\n  return <div>{n}</div>;\n}\n`,
+  },
+  {
+    name: "rust: doc header and struct block; pub fn walks",
+    spec: () => RUST,
+    walks: [false, false, true],
+    code: `//! Stats.\n\npub struct Summary {\n    pub min: f64,\n}\n\npub fn summarize(xs: &[f64]) -> f64 {\n    let mut s = 0.0;\n    for x in xs {\n        s += x;\n    }\n    s\n}\n`,
+  },
+  {
+    name: "python: everything blocks (no create walk)",
+    spec: () => PYTHON,
+    walks: [false, false],
+    code: `import sys\n\ndef main() -> int:\n    return 0\n`,
+  },
+];
+
+test("segment routing: walkable content walks in every walk language", () => {
+  for (const c of ROUTING) {
+    const spec = c.spec();
+    const segs = planFileWalk(c.code, spec);
+    assert.strictEqual(segs.length, c.walks.length, `${c.name}: segment count`);
+    segs.forEach((s, i) => {
+      const { rest } = splitLeadingPad(s.body);
+      const { content, tail } = splitTrailing(rest);
+      assert.strictEqual(content + tail, rest, `${c.name} segment ${i}: split is lossless`);
+      const walks = content !== "" && walkableSource(content, spec);
+      assert.strictEqual(walks, c.walks[i], `${c.name} segment ${i}: expected ${c.walks[i] ? "walk" : "block ghost"}`);
+    });
+  }
 });
 
 test("no grammar → one whole-file segment; empty file → none", () => {

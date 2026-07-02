@@ -7,7 +7,7 @@ import { ReplayOrchestrator } from "./orchestrator";
 import { parseRoot } from "./diff";
 import { findItemByName, leadingTriviaStart, walkableSource, SyntaxNode } from "./walk";
 import { planCreateInsertion, separatorToInsert, splitLeadingPad } from "./insertion";
-import { FileSegment, planFileWalk, resumeIndex } from "./fileWalk";
+import { FileSegment, planFileWalk, resumeIndex, splitTrailing } from "./fileWalk";
 import { Retrospective } from "../retrospective/retrospective";
 import { ProgramCounter, StepStatus } from "./programCounter";
 import { extractSymbol, stepAlreadyLanded } from "./resume";
@@ -117,6 +117,20 @@ export class GuideRunner {
         return;
       }
       this.fileWalk = undefined;
+      // Ground truth beats the session: the walk finishing does not prove the
+      // bytes are the sandbox's (a stray keystroke mid-step drifts them). Verify
+      // before marking done; a mismatch blocks — re-running the step lands the
+      // delta as Tab-gated patch hunks.
+      const expected = fw.segments.map((s) => s.sep + s.body).join("");
+      const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === fw.uri.toString());
+      if (doc && doc.getText() !== expected) {
+        this.output.appendLine(`[guide] step ${fw.stepId}: landed bytes differ from the sandbox — blocked`);
+        vscode.window.showWarningMessage(
+          `Human Replay: step ${fw.stepId} finished but the file differs from the sandbox. Re-run the step to land the difference as patch hunks, or fix by hand.`,
+        );
+        if (this.pc.block()) this.changed();
+        return;
+      }
       void this.saveFileWalkDoc(fw.uri);
     }
     const finished = this.pc.inFlightIndex;
@@ -447,6 +461,11 @@ export class GuideRunner {
       }
     }
 
+    // A blocked create-file the human explicitly re-runs is a ratified resume:
+    // the target holds our drifted partial build, and the patch surface lands
+    // the remainder one Tab-gated hunk at a time. Read the status before
+    // begin() clears the block mark.
+    const wasBlocked = this.pc.status(index) === "blocked";
     this.pc.begin(index);
     this.changed();
 
@@ -470,11 +489,11 @@ export class GuideRunner {
     const segments = planFileWalk(bytes, spec);
     const at = existing === undefined ? 0 : resumeIndex(segments, existing);
     if (at === undefined || at >= segments.length) {
-      if (wasMidFileWalk && existing !== undefined) {
-        // Re-armed mid-segment: the buffer holds a half-built shell that sits on
-        // no boundary, but it is OUR build, not a foreign file. The patch surface
-        // lands the remainder deterministically, one hunk per Tab.
-        this.output.appendLine(`[guide] step ${step.id}: re-armed mid-segment — resuming ${rel} as a patch`);
+      if ((wasMidFileWalk || wasBlocked) && existing !== undefined) {
+        // Re-armed mid-segment or re-run after a block: the buffer holds OUR
+        // drifted build, not a foreign file. The patch surface lands the
+        // remainder deterministically, one hunk per Tab.
+        this.output.appendLine(`[guide] step ${step.id}: resuming ${rel} as a patch (${wasBlocked ? "was blocked" : "re-armed mid-segment"})`);
         const editor = await this.parkCursor(await vscode.workspace.openTextDocument(targetUri), new vscode.Position(0, 0));
         await this.orchestrator.startPatch(editor, existing, bytes, step.retro);
         return;
@@ -527,21 +546,28 @@ export class GuideRunner {
     }
 
     const { pad, rest } = splitLeadingPad(seg.body);
+    // A walk rebuilds its node's bytes and nothing more, so the segment's
+    // trailing whitespace (the file's final newline) is typed with the lead —
+    // inserted at end-of-file with the cursor parked ahead of it.
+    const { content, tail } = splitTrailing(rest);
+    const walkable = content !== "" && walkableSource(content, fw.spec);
     const lead = seg.sep + pad;
-    if (lead) {
+    const typed = walkable ? lead + tail : lead;
+    if (typed) {
       const opened = await vscode.window.showTextDocument(doc, { preview: false });
       const end = doc.positionAt(doc.getText().length);
-      const applied = await opened.edit((b) => b.insert(end, lead));
+      const applied = await opened.edit((b) => b.insert(end, typed));
       if (!applied) throw new Error(`separator edit rejected on segment ${fw.at + 1}`);
     }
-    const cursor = doc.positionAt(doc.getText().length);
+    const cursor = doc.positionAt(doc.getText().length - (walkable ? tail.length : 0));
     const editor = await this.parkCursor(doc, cursor);
 
-    if (walkableSource(rest, fw.spec)) {
-      await this.disclosure.start(editor, rest, retro, fw.spec);
+    if (walkable) {
+      await this.disclosure.start(editor, content, retro, fw.spec);
     } else {
-      // Non-fn segment (imports, a struct, a comment block): one block ghost,
-      // real sandbox bytes, one Tab — the orchestrator's no-walk guard routes it.
+      // Non-walkable segment (imports, an interface, a comment block): one
+      // block ghost, real sandbox bytes, one Tab — the orchestrator's no-walk
+      // guard routes it.
       await this.orchestrator.start(editor, "", rest, retro, true, fw.spec);
     }
   }

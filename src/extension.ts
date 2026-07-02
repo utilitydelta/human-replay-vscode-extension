@@ -249,6 +249,18 @@ export function activate(context: vscode.ExtensionContext) {
       void vscode.commands.executeCommand("editor.action.inlineSuggest.trigger");
     }),
   );
+  // Same protection for diff-replay's native surface: Tab with a step armed but
+  // no ghost visible re-triggers when the cursor is on the armed line, and is a
+  // plain indent everywhere else. Without this, a swallowed trigger turns Tab
+  // into typed bytes ON the armed line — the stray-indent corruption.
+  context.subscriptions.push(
+    vscode.commands.registerCommand("humanReplay.diffReplayNudge", async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor || !(await diffReplay.nudge(editor))) {
+        await vscode.commands.executeCommand("tab");
+      }
+    }),
+  );
   context.subscriptions.push(
     vscode.commands.registerCommand("humanReplay.guide.runStepAt", async (node?: { index: number }) => {
       if (!node) return;

@@ -91,6 +91,19 @@ export function planFileWalk(text: string, spec: LanguageSpec | undefined): File
 }
 
 /**
+ * Split a segment body's trailing whitespace (the file's final newline) off its
+ * content. The walk rebuilds a node's bytes exactly and nothing more, so the
+ * tail must be typed by the runner — inserted at end-of-file BEFORE the walk
+ * starts, with the cursor parked ahead of it. Bytes land identically; without
+ * the split every last segment fails the walkability simulation and falls back
+ * to a block ghost.
+ */
+export function splitTrailing(body: string): { content: string; tail: string } {
+  const tail = /\s*$/.exec(body)![0];
+  return { content: body.slice(0, body.length - tail.length), tail };
+}
+
+/**
  * Where a partially-built target file resumes in the walk: the number of whole
  * segments already landed. The walk only ever appends full segments, so a prior
  * session's partial build is a byte-prefix ending exactly on a segment boundary.
