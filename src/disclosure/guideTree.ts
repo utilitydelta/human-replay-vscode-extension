@@ -60,7 +60,7 @@ export class GuideTreeProvider implements vscode.TreeDataProvider<Node> {
     item.contextValue = "guideStep";
     item.tooltip = status === "blocked" ? "Target position changed — run, skip, or jump" : step.why || step.title;
     // Click runs this step. (Carries the index for the run/skip commands.)
-    item.command = { command: "replayTab.guide.runStepAt", title: "Run step", arguments: [node] };
+    item.command = { command: "humanReplay.guide.runStepAt", title: "Run step", arguments: [node] };
     return item;
   }
 }

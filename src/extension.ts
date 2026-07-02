@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { ReplayTabCompletionProvider } from "./completionProvider";
+import { HumanReplayCompletionProvider } from "./completionProvider";
 import { DisclosureController } from "./disclosure/controller";
 import { DiffReplayController } from "./disclosure/diffReplayController";
 import { ReplayOrchestrator } from "./disclosure/orchestrator";
@@ -27,11 +27,11 @@ function startOllamaTerminal(output: vscode.OutputChannel): void {
 }
 
 export function activate(context: vscode.ExtensionContext) {
-  const output = vscode.window.createOutputChannel("Replay Tab");
+  const output = vscode.window.createOutputChannel("Human Replay");
   context.subscriptions.push(output);
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("replayTab.startOllama", () => startOllamaTerminal(output)),
+    vscode.commands.registerCommand("humanReplay.startOllama", () => startOllamaTerminal(output)),
   );
 
   const retrospectives = vscode.languages.createDiagnosticCollection("replay-retrospective");
@@ -41,7 +41,7 @@ export function activate(context: vscode.ExtensionContext) {
   const diffReplay = new DiffReplayController(output);
   const orchestrator = new ReplayOrchestrator(output, disclosure, diffReplay);
   const guideRunner = new GuideRunner(output, disclosure, orchestrator);
-  const provider = new ReplayTabCompletionProvider(output, disclosure, diffReplay);
+  const provider = new HumanReplayCompletionProvider(output, disclosure, diffReplay);
   context.subscriptions.push(
     vscode.languages.registerInlineCompletionItemProvider(
       { pattern: "**" },
@@ -83,19 +83,19 @@ export function activate(context: vscode.ExtensionContext) {
   // Not palette commands — they are the accept half of each surface: the native
   // ghost's command, the dramatic decoration's Tab, and the rewrite strike's Tab.
   context.subscriptions.push(
-    vscode.commands.registerCommand("replayTab.disclosureAccepted", () => {
+    vscode.commands.registerCommand("humanReplay.disclosureAccepted", () => {
       const editor = vscode.window.activeTextEditor;
       if (editor) disclosure.onAccepted(editor);
     }),
-    vscode.commands.registerCommand("replayTab.diffReplayAccepted", () => {
+    vscode.commands.registerCommand("humanReplay.diffReplayAccepted", () => {
       const editor = vscode.window.activeTextEditor;
       if (editor) diffReplay.onAccepted(editor);
     }),
-    vscode.commands.registerCommand("replayTab.diffReplayAcceptDecoration", () => {
+    vscode.commands.registerCommand("humanReplay.diffReplayAcceptDecoration", () => {
       const editor = vscode.window.activeTextEditor;
       if (editor) void diffReplay.acceptDecoration(editor);
     }),
-    vscode.commands.registerCommand("replayTab.acceptRewriteClear", () => void orchestrator.acceptRewriteClear()),
+    vscode.commands.registerCommand("humanReplay.acceptRewriteClear", () => void orchestrator.acceptRewriteClear()),
   );
 
   // Surfacing layer: collate inline comments while reading the replay, then take
@@ -114,14 +114,14 @@ export function activate(context: vscode.ExtensionContext) {
     }),
   );
   context.subscriptions.push(
-    vscode.commands.registerCommand("replayTab.comments.add", (reply: vscode.CommentReply) => comments.add(reply)),
-    vscode.commands.registerCommand("replayTab.comments.clear", () => comments.clear()),
-    vscode.commands.registerCommand("replayTab.comments.nextBlock", () => comments.nextBlock()),
-    vscode.commands.registerCommand("replayTab.comments.pullPrompt", async () => {
+    vscode.commands.registerCommand("humanReplay.comments.add", (reply: vscode.CommentReply) => comments.add(reply)),
+    vscode.commands.registerCommand("humanReplay.comments.clear", () => comments.clear()),
+    vscode.commands.registerCommand("humanReplay.comments.nextBlock", () => comments.nextBlock()),
+    vscode.commands.registerCommand("humanReplay.comments.pullPrompt", async () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor) return;
       if (comments.count === 0) {
-        vscode.window.showInformationMessage("Replay Tab: no comments to pull — nothing to send.");
+        vscode.window.showInformationMessage("Human Replay: no comments to pull — nothing to send.");
         return; // model-free pre-gate: never call the model with nothing
       }
       // Model-free actionability gate (S10): the 7B fabricates a task from vague
@@ -130,19 +130,19 @@ export function activate(context: vscode.ExtensionContext) {
       if (!setIsActionable(comments.comments.map((c) => c.text))) {
         output.appendLine("[comments] actionability gate: notes look too vague to act on");
         const choice = await vscode.window.showWarningMessage(
-          "Replay Tab: these notes look too vague to act on. A local model tends to fabricate a task from low-information comments. Send anyway?",
+          "Human Replay: these notes look too vague to act on. A local model tends to fabricate a task from low-information comments. Send anyway?",
           { modal: true },
           "Send anyway",
         );
         if (choice !== "Send anyway") return;
       }
       const cfg = readConfig();
-      const model = vscode.workspace.getConfiguration("replayTab").get<string>("promptModel", "qwen2.5-coder:7b-instruct");
+      const model = vscode.workspace.getConfiguration("humanReplay").get<string>("promptModel", "qwen2.5-coder:7b-instruct");
       const code = editor.document.getText();
       const messages = buildMessages("the function under review", code, comments.comments);
       try {
         const prompt = await vscode.window.withProgress(
-          { location: vscode.ProgressLocation.Notification, title: `Replay Tab: generating prompt (${model})…` },
+          { location: vscode.ProgressLocation.Notification, title: `Human Replay: generating prompt (${model})…` },
           () => generatePrompt(cfg.apiBase, model, messages),
         );
         // Human reads (and may edit) before it ever sends — the S10 backstop.
@@ -156,7 +156,7 @@ export function activate(context: vscode.ExtensionContext) {
         if (/fetch failed|ECONNREFUSED|ENOTFOUND|EAI_AGAIN/i.test(msg)) {
           void vscode.window
             .showWarningMessage(
-              `Replay Tab: can't reach Ollama at ${cfg.apiBase}. Start it, then pull an instruct model: ollama pull ${model}`,
+              `Human Replay: can't reach Ollama at ${cfg.apiBase}. Start it, then pull an instruct model: ollama pull ${model}`,
               "Start Ollama",
             )
             .then((choice) => {
@@ -164,10 +164,10 @@ export function activate(context: vscode.ExtensionContext) {
             });
         } else if (/not found|no such model|model/i.test(msg)) {
           vscode.window.showWarningMessage(
-            `Replay Tab: Ollama has no model "${model}". Pull it (ollama pull ${model}) or set replayTab.promptModel.`,
+            `Human Replay: Ollama has no model "${model}". Pull it (ollama pull ${model}) or set humanReplay.promptModel.`,
           );
         } else {
-          vscode.window.showWarningMessage(`Replay Tab: prompt generation failed — ${msg}`);
+          vscode.window.showWarningMessage(`Human Replay: prompt generation failed — ${msg}`);
         }
       }
     }),
@@ -177,7 +177,7 @@ export function activate(context: vscode.ExtensionContext) {
   // decorations, or a rewrite strike. One gesture (Esc / palette), every engine;
   // the buffer stays as-is and the guide step stays current for a re-run.
   context.subscriptions.push(
-    vscode.commands.registerCommand("replayTab.cancelDisclosure", () => {
+    vscode.commands.registerCommand("humanReplay.cancelDisclosure", () => {
       disclosure.cancel();
       orchestrator.cancelAll();
     }),
@@ -192,7 +192,7 @@ export function activate(context: vscode.ExtensionContext) {
   // Program-counter indicator: the replay's position, always visible while a guide
   // is loaded. Click to run the next step.
   const guideStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-  guideStatus.command = "replayTab.runNextStep";
+  guideStatus.command = "humanReplay.runNextStep";
   context.subscriptions.push(guideStatus);
   const updateGuideStatus = () => {
     if (!guideRunner.loaded) {
@@ -212,12 +212,12 @@ export function activate(context: vscode.ExtensionContext) {
   // The replay-guide panel (TreeView): phases → steps → status. Refreshes whenever
   // the runner's state changes; clicking a step runs it, the inline icons run/skip.
   const guideTree = new GuideTreeProvider(guideRunner);
-  context.subscriptions.push(vscode.window.registerTreeDataProvider("replayTab.guideSteps", guideTree));
+  context.subscriptions.push(vscode.window.registerTreeDataProvider("humanReplay.guideSteps", guideTree));
   guideRunner.setChangeHandler(() => {
     guideTree.refresh();
     updateGuideStatus();
     persistPosition(); // every done/skip lands in workspaceState — a reload resumes here
-    void vscode.commands.executeCommand("setContext", "replayTab.guideLoaded", guideRunner.loaded);
+    void vscode.commands.executeCommand("setContext", "humanReplay.guideLoaded", guideRunner.loaded);
   });
   // A re-anchored continue that can't place the next node marks the in-flight step
   // blocked — the panel shows amber and the human decides. Both engines surface the
@@ -226,23 +226,23 @@ export function activate(context: vscode.ExtensionContext) {
   diffReplay.setCollisionHandler(() => guideRunner.markCurrentBlocked());
   // Tab after the human diverges drives the re-anchored continue (gated by context).
   context.subscriptions.push(
-    vscode.commands.registerCommand("replayTab.continueDisclosure", () => {
+    vscode.commands.registerCommand("humanReplay.continueDisclosure", () => {
       const editor = vscode.window.activeTextEditor;
       if (editor) void disclosure.continueWalk(editor);
     }),
   );
   context.subscriptions.push(
-    vscode.commands.registerCommand("replayTab.guide.runStepAt", async (node?: { index: number }) => {
+    vscode.commands.registerCommand("humanReplay.guide.runStepAt", async (node?: { index: number }) => {
       if (!node) return;
       await guideRunner.runStep(node.index, clearGate);
     }),
-    vscode.commands.registerCommand("replayTab.guide.skipStepAt", (node?: { index: number }) => {
+    vscode.commands.registerCommand("humanReplay.guide.skipStepAt", (node?: { index: number }) => {
       if (node) guideRunner.skip(node.index);
     }),
   );
 
   const resolveGuideUris = async (): Promise<vscode.Uri[]> => {
-    const explicit = vscode.workspace.getConfiguration("replayTab").get<string>("guidePath", "").trim();
+    const explicit = vscode.workspace.getConfiguration("humanReplay").get<string>("guidePath", "").trim();
     if (explicit) {
       // Absolute/workspace path or a glob — both go through findFiles relative to
       // the workspace; an absolute path resolves directly.
@@ -255,7 +255,7 @@ export function activate(context: vscode.ExtensionContext) {
   // Where a resumed replay's position lives: workspaceState, keyed by the guide
   // file. Done/skipped survive a window reload; the byte-derived pass on load
   // catches anything the saved position missed (or a lost workspaceState).
-  const positionKey = (guide: vscode.Uri) => `replayTab.replay:${guide.fsPath}`;
+  const positionKey = (guide: vscode.Uri) => `humanReplay.replay:${guide.fsPath}`;
   let currentGuideUri: vscode.Uri | undefined;
   const persistPosition = () => {
     if (currentGuideUri && guideRunner.loaded) {
@@ -277,9 +277,9 @@ export function activate(context: vscode.ExtensionContext) {
     const done = guide.steps.length - guideRunner.steps.filter((_, i) => guideRunner.status(i) === "pending" || guideRunner.status(i) === "current").length;
     vscode.window.showInformationMessage(
       done > 0
-        ? `Replay Tab: resumed "${guide.feature}" at step ${Math.min(guideRunner.counter + 1, guide.steps.length)}/${guide.steps.length}` +
+        ? `Human Replay: resumed "${guide.feature}" at step ${Math.min(guideRunner.counter + 1, guide.steps.length)}/${guide.steps.length}` +
             (derived > 0 ? ` (${derived} step(s) already landed in the target)` : "")
-        : `Replay Tab: loaded "${guide.feature}" — ${guide.steps.length} steps.`,
+        : `Human Replay: loaded "${guide.feature}" — ${guide.steps.length} steps.`,
     );
     return true;
   };
@@ -289,8 +289,8 @@ export function activate(context: vscode.ExtensionContext) {
   // its guide, resume from ground truth, and flow straight into the next step.
   // One command from "open the target repo" to "tabbing code in".
   context.subscriptions.push(
-    vscode.commands.registerCommand("replayTab.startReplay", async () => {
-      const cfg = vscode.workspace.getConfiguration("replayTab");
+    vscode.commands.registerCommand("humanReplay.startReplay", async () => {
+      const cfg = vscode.workspace.getConfiguration("humanReplay");
       const configured = cfg.get<string>("sandboxParent", "").trim();
       const parent = configured
         ? configured.replace(/^~(?=$|\/)/, os.homedir())
@@ -311,7 +311,7 @@ export function activate(context: vscode.ExtensionContext) {
         output.appendLine(`[replay] no sandbox folder at ${parent}`);
       }
 
-      const last = context.workspaceState.get<{ sandbox: string; guide: string }>("replayTab.lastReplay");
+      const last = context.workspaceState.get<{ sandbox: string; guide: string }>("humanReplay.lastReplay");
       type SandboxItem = vscode.QuickPickItem & { full?: string };
       const items: SandboxItem[] = dirs.map((d) => ({
         label: d.name,
@@ -323,10 +323,10 @@ export function activate(context: vscode.ExtensionContext) {
       items.sort((a, b) => (a.description ? -1 : 0) - (b.description ? -1 : 0));
       items.push({
         label: "$(file-code) No sandbox — self-contained guide",
-        detail: "A guide with embedded Before/After bytes (workspace replay-guides/ or replayTab.guidePath)",
+        detail: "A guide with embedded Before/After bytes (workspace replay-guides/ or humanReplay.guidePath)",
       });
       const sandboxPick = await vscode.window.showQuickPick(items, {
-        title: "Replay Tab: replay from which sandbox?",
+        title: "Human Replay: replay from which sandbox?",
         placeHolder: "The sandbox holding the agent's finished work (the After bytes)",
       });
       if (!sandboxPick) return;
@@ -334,7 +334,7 @@ export function activate(context: vscode.ExtensionContext) {
       output.appendLine(`[replay] sandbox: ${sandboxPick.full ?? "(none — self-contained guide)"}`);
 
       // The guide lives with the sandbox (the generator writes it there). Fall back
-      // to the workspace's replay-guides/ or replayTab.guidePath for hand-authored
+      // to the workspace's replay-guides/ or humanReplay.guidePath for hand-authored
       // guides kept elsewhere; the no-sandbox pick goes straight to those.
       const sandboxGuides = ((): vscode.Uri[] => {
         if (!sandboxPick.full) return [];
@@ -352,8 +352,8 @@ export function activate(context: vscode.ExtensionContext) {
       if (guides.length === 0) {
         vscode.window.showWarningMessage(
           sandboxPick.full
-            ? `Replay Tab: no guide in ${sandboxPick.full}/replay-guides/ and none in the workspace. Generate one, or set replayTab.guidePath.`
-            : "Replay Tab: no replay guide found. Add one under replay-guides/ or set replayTab.guidePath.",
+            ? `Human Replay: no guide in ${sandboxPick.full}/replay-guides/ and none in the workspace. Generate one, or set humanReplay.guidePath.`
+            : "Human Replay: no replay guide found. Add one under replay-guides/ or set humanReplay.guidePath.",
         );
         return;
       }
@@ -363,7 +363,7 @@ export function activate(context: vscode.ExtensionContext) {
           : await vscode.window
               .showQuickPick(
                 guides.map((u) => ({ label: path.basename(u.fsPath), description: u.fsPath, uri: u })),
-                { title: "Replay Tab: choose a replay guide" },
+                { title: "Human Replay: choose a replay guide" },
               )
               .then((c) => c?.uri);
       if (!guidePick) return;
@@ -372,11 +372,11 @@ export function activate(context: vscode.ExtensionContext) {
         await loadGuideFrom(guidePick);
       } catch (e) {
         // A malformed guide is canonical-source corruption: surface it, don't swallow.
-        vscode.window.showErrorMessage(`Replay Tab: ${String(e)}`);
+        vscode.window.showErrorMessage(`Human Replay: ${String(e)}`);
         return;
       }
       if (sandboxPick.full) {
-        void context.workspaceState.update("replayTab.lastReplay", {
+        void context.workspaceState.update("humanReplay.lastReplay", {
           sandbox: sandboxPick.full,
           guide: guidePick.fsPath,
         });
@@ -387,11 +387,11 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("replayTab.runNextStep", async () => {
+    vscode.commands.registerCommand("humanReplay.runNextStep", async () => {
       if (!guideRunner.loaded) {
         // Nothing mid-flight (fresh window, reloaded session) — route into the
         // entry point; its last-replay pin makes the resume two keystrokes.
-        await vscode.commands.executeCommand("replayTab.startReplay");
+        await vscode.commands.executeCommand("humanReplay.startReplay");
         return;
       }
       await guideRunner.runCurrent(clearGate);
@@ -412,8 +412,8 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("replayTab.toggle", async () => {
-      const cfg = vscode.workspace.getConfiguration("replayTab");
+    vscode.commands.registerCommand("humanReplay.toggle", async () => {
+      const cfg = vscode.workspace.getConfiguration("humanReplay");
       const next = !cfg.get<boolean>("enabled", true);
       await cfg.update(
         "enabled",
@@ -421,13 +421,13 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.ConfigurationTarget.Global,
       );
       vscode.window.setStatusBarMessage(
-        `Replay Tab ${next ? "enabled" : "disabled"}`,
+        `Human Replay ${next ? "enabled" : "disabled"}`,
         2000,
       );
     }),
   );
 
-  output.appendLine("[replay-tab] activated");
+  output.appendLine("[human-replay] activated");
 }
 
 export function deactivate() {

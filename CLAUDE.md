@@ -43,7 +43,7 @@ A change that violates one of these is drift, not a feature.
   Adding a grammar means adding it to every externals list. Wasm is for
   `.vsix` packaging only.
 - A code path isn't finished when it compiles; it's finished when it emits
-  evidence — a green oracle, or a span in the "Replay Tab" output channel.
+  evidence — a green oracle, or a span in the "Human Replay" output channel.
   Every engine decision already logs there (`[guide]`, `[replay]`,
   `[diff-replay]`); match that.
 - Pure logic lives out of `vscode`-coupled files so it bundles headless. The

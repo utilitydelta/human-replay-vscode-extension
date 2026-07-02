@@ -34,7 +34,7 @@ export class GuideRunner {
   private readonly pc = new ProgramCounter();
   private onChange?: () => void; // fired when state changes, so the panel refreshes
   // The sandbox this session replays from. Set by the Start Replay picker; the
-  // replayTab.sandboxRoot config is the fallback so a hand-configured run
+  // humanReplay.sandboxRoot config is the fallback so a hand-configured run
   // still works.
   private sessionSandboxRoot: string | undefined;
 
@@ -131,7 +131,7 @@ export class GuideRunner {
   }
 
   get sandboxRoot(): string | undefined {
-    const configured = vscode.workspace.getConfiguration("replayTab").get<string>("sandboxRoot", "").trim();
+    const configured = vscode.workspace.getConfiguration("humanReplay").get<string>("sandboxRoot", "").trim();
     return this.sessionSandboxRoot ?? (configured || undefined);
   }
 
@@ -206,7 +206,7 @@ export class GuideRunner {
     const uris = rel ? await vscode.workspace.findFiles(rel) : [];
     if (uris.length === 0) {
       vscode.window.showWarningMessage(
-        `Replay Tab: step ${step.id} targets "${step.file}", which isn't in the workspace.`,
+        `Human Replay: step ${step.id} targets "${step.file}", which isn't in the workspace.`,
       );
       return undefined;
     }
@@ -253,7 +253,7 @@ export class GuideRunner {
         if (sandboxText !== undefined) {
           const plan = planCreateInsertion(text, sandboxText, step.symbol, spec);
           if (plan.kind === "blocked") {
-            vscode.window.showWarningMessage(`Replay Tab: step ${step.id} can't place \`${step.symbol}\`: ${plan.reason}.`);
+            vscode.window.showWarningMessage(`Human Replay: step ${step.id} can't place \`${step.symbol}\`: ${plan.reason}.`);
             this.output.appendLine(`[guide] step ${step.id}: placement blocked — ${plan.reason}`);
             return undefined;
           }
@@ -314,12 +314,12 @@ export class GuideRunner {
   }
 
   // Read the step's symbol from the sandbox tree (the session's picked sandbox,
-  // else config `replayTab.sandboxRoot`, + the step's file path) — the source
+  // else config `humanReplay.sandboxRoot`, + the step's file path) — the source
   // of the `after` bytes for a lean guide.
   private readSandboxSymbol(step: ReplayStep, spec: LanguageSpec): string | undefined {
     const root = this.sandboxRoot;
     if (!root) {
-      this.output.appendLine(`[guide] step ${step.id}: no sandbox picked and no replayTab.sandboxRoot set — can't resolve After bytes`);
+      this.output.appendLine(`[guide] step ${step.id}: no sandbox picked and no humanReplay.sandboxRoot set — can't resolve After bytes`);
       return undefined;
     }
     const rel = step.file.split(":")[0];
@@ -341,12 +341,12 @@ export class GuideRunner {
     const rel = step.file.split(":")[0];
     const root = this.sandboxRoot;
     if (!root) {
-      vscode.window.showWarningMessage(`Replay Tab: step ${step.id} needs a sandbox to read ${rel} from — run Start Replay or set replayTab.sandboxRoot.`);
+      vscode.window.showWarningMessage(`Human Replay: step ${step.id} needs a sandbox to read ${rel} from — run Start Replay or set humanReplay.sandboxRoot.`);
       return;
     }
     const bytes = this.readFileFromDisk(path.join(root, rel));
     if (bytes === undefined) {
-      vscode.window.showWarningMessage(`Replay Tab: step ${step.id} can't read ${rel} from the sandbox.`);
+      vscode.window.showWarningMessage(`Human Replay: step ${step.id} can't read ${rel} from the sandbox.`);
       return;
     }
     const ws = vscode.workspace.workspaceFolders?.[0];
@@ -366,7 +366,7 @@ export class GuideRunner {
       this.changed();
       this.output.appendLine(`[guide] step ${step.id}: ${rel} already exists and differs from the sandbox — blocked`);
       vscode.window.showWarningMessage(
-        `Replay Tab: step ${step.id} — ${rel} already exists and differs from the sandbox. Merge by hand or skip the step.`,
+        `Human Replay: step ${step.id} — ${rel} already exists and differs from the sandbox. Merge by hand or skip the step.`,
       );
       return;
     }
@@ -381,7 +381,7 @@ export class GuideRunner {
     await vscode.window.showTextDocument(doc, { preview: false });
     this.output.appendLine(`[guide] step ${step.id}: dropped ${rel} whole (${bytes.length} bytes) from the sandbox`);
     if (step.retro.question) {
-      void vscode.window.showInformationMessage(`Replay Tab — ${step.symbol}: ${step.retro.question}`);
+      void vscode.window.showInformationMessage(`Human Replay — ${step.symbol}: ${step.retro.question}`);
     }
     this.completeCurrent(); // flows into the next step — file drops keep the momentum
   }
@@ -396,7 +396,7 @@ export class GuideRunner {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       this.output.appendLine(`[guide] step ${this.guide?.steps[index]?.id ?? index} failed: ${msg}`);
-      vscode.window.showErrorMessage(`Replay Tab: step failed — ${msg}. Marked blocked; skip it or fix the guide.`);
+      vscode.window.showErrorMessage(`Human Replay: step failed — ${msg}. Marked blocked; skip it or fix the guide.`);
       this.markCurrentBlocked();
     }
   }
@@ -404,7 +404,7 @@ export class GuideRunner {
   private async runStepUnguarded(index: number, clearDiagnostics: (doc: vscode.TextDocument) => void): Promise<void> {
     const step = this.guide?.steps[index];
     if (!step) {
-      vscode.window.showWarningMessage("Replay Tab: no such step in the loaded guide.");
+      vscode.window.showWarningMessage("Human Replay: no such step in the loaded guide.");
       return;
     }
     if (step.action === "create-file") {
@@ -414,7 +414,7 @@ export class GuideRunner {
     const spec = languageForFile(step.file);
     if (!spec) {
       vscode.window.showWarningMessage(
-        `Replay Tab: step ${step.id} targets ${step.file} — no language support for that extension. Route it to a Manual step or Create File.`,
+        `Human Replay: step ${step.id} targets ${step.file} — no language support for that extension. Route it to a Manual step or Create File.`,
       );
       this.output.appendLine(`[guide] step ${step.id}: unsupported language for ${step.file}`);
       return;
@@ -431,7 +431,7 @@ export class GuideRunner {
       (step.action !== "delete" && after === undefined && "After (sandbox symbol)");
     if (need) {
       vscode.window.showWarningMessage(
-        `Replay Tab: step ${step.id} can't resolve ${need} for \`${step.symbol}\` in ${step.file}. Check replayTab.sandboxRoot and that the symbol is a named item (fn, struct, enum, const, trait, ...).`,
+        `Human Replay: step ${step.id} can't resolve ${need} for \`${step.symbol}\` in ${step.file}. Check humanReplay.sandboxRoot and that the symbol is a named item (fn, struct, enum, const, trait, ...).`,
       );
       this.output.appendLine(`[guide] step ${step.id}: unresolved bytes — ${need}`);
       return;
@@ -482,7 +482,7 @@ export class GuideRunner {
     const next = this.pc.next();
     if (next >= this.steps.length) {
       vscode.window.showInformationMessage(
-        `Replay Tab: guide "${this.feature}" — no steps left to run (done or skipped).`,
+        `Human Replay: guide "${this.feature}" — no steps left to run (done or skipped).`,
       );
       return;
     }

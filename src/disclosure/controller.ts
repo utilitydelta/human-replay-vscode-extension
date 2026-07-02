@@ -8,8 +8,8 @@ import { LanguageSpec, RUST } from "./language";
 import { revealCursor } from "./reveal";
 import { Retrospective } from "../retrospective/retrospective";
 
-const DIVERGED_CONTEXT = "replayTab.disclosureDiverged";
-const ACTIVE_CONTEXT = "replayTab.disclosureActive";
+const DIVERGED_CONTEXT = "humanReplay.disclosureDiverged";
+const ACTIVE_CONTEXT = "humanReplay.disclosureActive";
 const SETTLE_MS = 450; // wait for typing to settle before re-offering the recovery ghost
 
 // Drives the descend-and-fill walk over the native inline-completion surface.
@@ -120,8 +120,8 @@ export class DisclosureController {
       new vscode.Range(position, position),
     );
     item.command = {
-      command: "replayTab.disclosureAccepted",
-      title: "Replay Tab: next disclosure step",
+      command: "humanReplay.disclosureAccepted",
+      title: "Human Replay: next disclosure step",
     };
     return item;
   }
@@ -166,8 +166,8 @@ export class DisclosureController {
       new vscode.Range(position, position),
     );
     item.command = {
-      command: "replayTab.disclosureAccepted",
-      title: "Replay Tab: next disclosure step",
+      command: "humanReplay.disclosureAccepted",
+      title: "Human Replay: next disclosure step",
     };
     return item;
   }
@@ -314,7 +314,7 @@ export class DisclosureController {
       this.scheduleGhost();
       this.output.appendLine("[disclosure] divergence detected — recovery ghost re-anchors to your cursor");
       void vscode.window.setStatusBarMessage(
-        "Replay Tab: you took over — Tab keeps placing the planned nodes at your cursor",
+        "Human Replay: you took over — Tab keeps placing the planned nodes at your cursor",
         4000,
       );
       return;
@@ -440,7 +440,7 @@ export class DisclosureController {
     this.onCollision?.();
     this.output.appendLine("[disclosure] collision: next node's parent is gone — surfacing");
     await vscode.window.showWarningMessage(
-      "Replay Tab: the next node's place in the tree changed too much to fill automatically — finish this symbol by hand.",
+      "Human Replay: the next node's place in the tree changed too much to fill automatically — finish this symbol by hand.",
       "OK",
     );
     this.end();

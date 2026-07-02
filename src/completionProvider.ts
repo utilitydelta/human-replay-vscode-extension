@@ -14,7 +14,7 @@ import { DiffReplayController } from "./disclosure/diffReplayController";
  * When a disclosure session is active this provider yields to it: the ghost is
  * the next AST descent step, served model-free, never the FIM path.
  */
-export class ReplayTabCompletionProvider
+export class HumanReplayCompletionProvider
   implements vscode.InlineCompletionItemProvider
 {
   private lastCompletion = "";
@@ -111,10 +111,10 @@ export class ReplayTabCompletionProvider
       }
 
       this.output.appendLine(
-        `[replay-tab] ${Date.now() - started}ms, ${completion.length} chars`,
+        `[human-replay] ${Date.now() - started}ms, ${completion.length} chars`,
       );
       if (this.offline) {
-        this.output.appendLine("[replay-tab] model reachable again");
+        this.output.appendLine("[human-replay] model reachable again");
         this.offline = false;
       }
 
@@ -138,12 +138,12 @@ export class ReplayTabCompletionProvider
         if (!this.offline) {
           this.offline = true;
           this.output.appendLine(
-            "[replay-tab] model unreachable — autocomplete off until it returns " +
+            "[human-replay] model unreachable — autocomplete off until it returns " +
               "(disclosure is unaffected; it never uses the model)",
           );
         }
       } else {
-        this.output.appendLine(`[replay-tab] error: ${String(err)}`);
+        this.output.appendLine(`[human-replay] error: ${String(err)}`);
       }
       return undefined;
     }

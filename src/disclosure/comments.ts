@@ -30,7 +30,7 @@ export class CommentLayer {
 
   constructor(private readonly output: vscode.OutputChannel) {
     this.controller = vscode.comments.createCommentController(
-      "replayTab.comments",
+      "humanReplay.comments",
       "Replay Notes",
     );
     // Allow a comment on any line of the file under replay.

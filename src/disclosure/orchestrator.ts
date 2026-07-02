@@ -14,7 +14,7 @@ import { LanguageSpec, RUST } from "./language";
 // the new one from scratch so the human reads the new shape, not a pile of hunks.
 // Model-free; the decision is the AST's, not a judgment call.
 
-const REWRITE_CONTEXT = "replayTab.rewriteStrikeActive";
+const REWRITE_CONTEXT = "humanReplay.rewriteStrikeActive";
 
 export class ReplayOrchestrator {
   private readonly strike: vscode.TextEditorDecorationType;

@@ -1,11 +1,17 @@
 {
-  "name": "human-replay-vscode-extension",
+  "name": "human-replay",
   "displayName": "Human Replay",
   "description": "Replay sandboxed AI work into your real branch one Tab at a time. Guide-driven, model-free replay; local FIM autocomplete on the side.",
   "version": "0.0.1",
   "publisher": "utilitydelta",
   "license": "Apache-2.0",
-  "private": true,
+  "keywords": [
+    "ai",
+    "replay",
+    "code review",
+    "tree-sitter",
+    "autocomplete"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/utilitydelta/human-replay-vscode-extension"
@@ -24,159 +30,159 @@
   "contributes": {
     "commands": [
       {
-        "command": "replayTab.startReplay",
+        "command": "humanReplay.startReplay",
         "title": "Start Replay",
-        "category": "Replay Tab"
+        "category": "Human Replay"
       },
       {
-        "command": "replayTab.toggle",
+        "command": "humanReplay.toggle",
         "title": "Toggle Autocomplete",
-        "category": "Replay Tab"
+        "category": "Human Replay"
       },
       {
-        "command": "replayTab.comments.add",
-        "title": "Replay Tab: Add Replay Note"
+        "command": "humanReplay.comments.add",
+        "title": "Human Replay: Add Replay Note"
       },
       {
-        "command": "replayTab.comments.pullPrompt",
+        "command": "humanReplay.comments.pullPrompt",
         "title": "Comments: Pull into Sandbox Prompt",
-        "category": "Replay Tab"
+        "category": "Human Replay"
       },
       {
-        "command": "replayTab.comments.clear",
+        "command": "humanReplay.comments.clear",
         "title": "Comments: Clear All",
-        "category": "Replay Tab"
+        "category": "Human Replay"
       },
       {
-        "command": "replayTab.comments.nextBlock",
+        "command": "humanReplay.comments.nextBlock",
         "title": "Comments: Keep for Next Block",
-        "category": "Replay Tab"
+        "category": "Human Replay"
       },
       {
-        "command": "replayTab.cancelDisclosure",
+        "command": "humanReplay.cancelDisclosure",
         "title": "Cancel Replay",
-        "category": "Replay Tab"
+        "category": "Human Replay"
       },
       {
-        "command": "replayTab.runNextStep",
+        "command": "humanReplay.runNextStep",
         "title": "Run Next Step",
-        "category": "Replay Tab"
+        "category": "Human Replay"
       },
       {
-        "command": "replayTab.startOllama",
+        "command": "humanReplay.startOllama",
         "title": "Start Ollama (ollama serve in a terminal)",
-        "category": "Replay Tab"
+        "category": "Human Replay"
       },
       {
-        "command": "replayTab.guide.runStepAt",
+        "command": "humanReplay.guide.runStepAt",
         "title": "Run This Step",
         "icon": "$(play)"
       },
       {
-        "command": "replayTab.guide.skipStepAt",
+        "command": "humanReplay.guide.skipStepAt",
         "title": "Skip This Step",
         "icon": "$(debug-step-over)"
       },
       {
-        "command": "replayTab.continueDisclosure",
+        "command": "humanReplay.continueDisclosure",
         "title": "Continue Replay (after editing)",
-        "category": "Replay Tab"
+        "category": "Human Replay"
       }
     ],
     "views": {
       "explorer": [
         {
-          "id": "replayTab.guideSteps",
+          "id": "humanReplay.guideSteps",
           "name": "Replay Guide",
-          "when": "replayTab.guideLoaded"
+          "when": "humanReplay.guideLoaded"
         }
       ]
     },
     "keybindings": [
       {
-        "command": "replayTab.diffReplayAcceptDecoration",
+        "command": "humanReplay.diffReplayAcceptDecoration",
         "key": "tab",
-        "when": "editorTextFocus && replayTab.diffDecorationActive && !suggestWidgetVisible && !inlineSuggestionVisible"
+        "when": "editorTextFocus && humanReplay.diffDecorationActive && !suggestWidgetVisible && !inlineSuggestionVisible"
       },
       {
-        "command": "replayTab.acceptRewriteClear",
+        "command": "humanReplay.acceptRewriteClear",
         "key": "tab",
-        "when": "editorTextFocus && replayTab.rewriteStrikeActive && !suggestWidgetVisible && !inlineSuggestionVisible"
+        "when": "editorTextFocus && humanReplay.rewriteStrikeActive && !suggestWidgetVisible && !inlineSuggestionVisible"
       },
       {
-        "command": "replayTab.continueDisclosure",
+        "command": "humanReplay.continueDisclosure",
         "key": "tab",
-        "when": "editorTextFocus && replayTab.disclosureDiverged && !suggestWidgetVisible && !inlineSuggestionVisible"
+        "when": "editorTextFocus && humanReplay.disclosureDiverged && !suggestWidgetVisible && !inlineSuggestionVisible"
       },
       {
-        "command": "replayTab.cancelDisclosure",
+        "command": "humanReplay.cancelDisclosure",
         "key": "escape",
-        "when": "editorTextFocus && (replayTab.disclosureActive || replayTab.diffDecorationActive || replayTab.rewriteStrikeActive) && !inlineSuggestionVisible && !suggestWidgetVisible"
+        "when": "editorTextFocus && (humanReplay.disclosureActive || humanReplay.diffDecorationActive || humanReplay.rewriteStrikeActive) && !inlineSuggestionVisible && !suggestWidgetVisible"
       }
     ],
     "menus": {
       "commandPalette": [
         {
-          "command": "replayTab.comments.add",
+          "command": "humanReplay.comments.add",
           "when": "false"
         },
         {
-          "command": "replayTab.guide.runStepAt",
+          "command": "humanReplay.guide.runStepAt",
           "when": "false"
         },
         {
-          "command": "replayTab.guide.skipStepAt",
+          "command": "humanReplay.guide.skipStepAt",
           "when": "false"
         },
         {
-          "command": "replayTab.continueDisclosure",
+          "command": "humanReplay.continueDisclosure",
           "when": "false"
         }
       ],
       "comments/commentThread/context": [
         {
-          "command": "replayTab.comments.add",
+          "command": "humanReplay.comments.add",
           "group": "inline",
-          "when": "commentController == replayTab.comments"
+          "when": "commentController == humanReplay.comments"
         }
       ],
       "view/item/context": [
         {
-          "command": "replayTab.guide.runStepAt",
-          "when": "view == replayTab.guideSteps && viewItem == guideStep",
+          "command": "humanReplay.guide.runStepAt",
+          "when": "view == humanReplay.guideSteps && viewItem == guideStep",
           "group": "inline@1"
         },
         {
-          "command": "replayTab.guide.skipStepAt",
-          "when": "view == replayTab.guideSteps && viewItem == guideStep",
+          "command": "humanReplay.guide.skipStepAt",
+          "when": "view == humanReplay.guideSteps && viewItem == guideStep",
           "group": "inline@2"
         }
       ]
     },
     "configuration": {
-      "title": "Replay Tab",
+      "title": "Human Replay",
       "properties": {
-        "replayTab.enabled": {
+        "humanReplay.enabled": {
           "type": "boolean",
           "default": true,
           "description": "Enable inline autocomplete suggestions."
         },
-        "replayTab.apiBase": {
+        "humanReplay.apiBase": {
           "type": "string",
           "default": "http://localhost:11434",
           "description": "Base URL of the local Ollama server."
         },
-        "replayTab.model": {
+        "humanReplay.model": {
           "type": "string",
           "default": "qwen2.5-coder:1.5b-base",
           "description": "Ollama model tag. Use a FIM-capable BASE model (not -instruct). e.g. qwen2.5-coder:1.5b-base, codestral:latest."
         },
-        "replayTab.promptModel": {
+        "humanReplay.promptModel": {
           "type": "string",
           "default": "qwen2.5-coder:7b-instruct",
           "description": "INSTRUCT model used to turn collated replay comments into a sandbox-agent prompt (the surfacing layer). Must be an -instruct model, not the FIM base model."
         },
-        "replayTab.template": {
+        "humanReplay.template": {
           "type": "string",
           "enum": [
             "auto",
@@ -188,47 +194,47 @@
           "default": "auto",
           "description": "FIM prompt template. 'auto' infers from the model name."
         },
-        "replayTab.maxTokens": {
+        "humanReplay.maxTokens": {
           "type": "number",
           "default": 256,
           "description": "Maximum tokens to generate per completion (num_predict)."
         },
-        "replayTab.temperature": {
+        "humanReplay.temperature": {
           "type": "number",
           "default": 0.01,
           "description": "Sampling temperature. Low values give stable, deterministic completions."
         },
-        "replayTab.debounceMs": {
+        "humanReplay.debounceMs": {
           "type": "number",
           "default": 300,
           "description": "Delay after the last keystroke before requesting a completion."
         },
-        "replayTab.prefixChars": {
+        "humanReplay.prefixChars": {
           "type": "number",
           "default": 3000,
           "description": "Characters of context kept before the cursor."
         },
-        "replayTab.suffixChars": {
+        "humanReplay.suffixChars": {
           "type": "number",
           "default": 1000,
           "description": "Characters of context kept after the cursor."
         },
-        "replayTab.multiline": {
+        "humanReplay.multiline": {
           "type": "boolean",
           "default": true,
           "description": "Allow multi-line completions. Disable for single-line-only suggestions."
         },
-        "replayTab.guidePath": {
+        "humanReplay.guidePath": {
           "type": "string",
           "default": "",
           "description": "Path or glob to a replay guide (.md). Empty scans the workspace's replay-guides/ folder."
         },
-        "replayTab.sandboxRoot": {
+        "humanReplay.sandboxRoot": {
           "type": "string",
           "default": "",
           "description": "Absolute path to the sandbox tree the guide replays from (the 'after' state). A lean guide carries no code fences; the runner resolves each step's After bytes from <sandboxRoot>/<step file> by symbol. Before bytes come from the open workspace file."
         },
-        "replayTab.sandboxParent": {
+        "humanReplay.sandboxParent": {
           "type": "string",
           "default": "",
           "description": "Folder containing agent sandboxes, offered by Start Replay. Empty defaults to ~/sandbox."
@@ -241,11 +247,14 @@
     "build": "node esbuild.js",
     "watch": "node esbuild.js --watch",
     "typecheck": "tsc --noEmit",
-    "test": "node --test"
+    "test": "node --test",
+    "package": "vsce package",
+    "postinstall": "node scripts/fix-grammar-peers.js"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.9.2",
     "esbuild": "^0.21.0",
     "typescript": "^5.6.3"
   },

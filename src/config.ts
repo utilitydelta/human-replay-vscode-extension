@@ -15,7 +15,7 @@ export interface Config {
 }
 
 export function readConfig(): Config {
-  const c = vscode.workspace.getConfiguration("replayTab");
+  const c = vscode.workspace.getConfiguration("humanReplay");
   return {
     enabled: c.get<boolean>("enabled", true),
     apiBase: c.get<string>("apiBase", "http://localhost:11434"),

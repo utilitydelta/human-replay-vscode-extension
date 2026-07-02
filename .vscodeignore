@@ -1,8 +1,28 @@
-src/**
-node_modules/**
-.gitignore
+.vscode/**
 .vscode-test/**
+.claude/**
+src/**
+test/**
+scripts/**
+replay-guides/**
 esbuild.js
 tsconfig.json
+CLAUDE.md
+package-lock.json
+.gitignore
+**/.index.md
 **/*.map
 **/*.ts
+
+# The dist bundle externalizes the native tree-sitter packages, so vsce ships
+# production node_modules in the vsix. NAPI prebuilds make the C/C++ sources,
+# wasm builds, and grammar definitions dead weight.
+node_modules/**/src/**
+node_modules/**/vendor/**
+node_modules/**/*.wasm
+node_modules/**/binding.gyp
+node_modules/**/grammar.js
+node_modules/**/queries/**
+node_modules/**/common/**
+node_modules/node-addon-api/**
+node_modules/**/node_modules/**

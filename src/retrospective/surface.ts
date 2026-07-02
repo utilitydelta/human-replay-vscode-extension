@@ -24,7 +24,7 @@ export function surfaceRetrospective(
   // panel (they render only as a faint inline underline). Information is still
   // no-red-alarm but gives the navigable Problems entry the design wants (F8).
   const diag = new vscode.Diagnostic(range, header, vscode.DiagnosticSeverity.Information);
-  diag.source = "Replay Tab";
+  diag.source = "Human Replay";
   diag.relatedInformation = retro.invariants.map(
     (inv) =>
       new vscode.DiagnosticRelatedInformation(

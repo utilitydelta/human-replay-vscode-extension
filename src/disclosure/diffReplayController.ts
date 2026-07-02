@@ -48,7 +48,7 @@ interface Session {
   dramatic?: boolean;
 }
 
-const DECORATION_CONTEXT = "replayTab.diffDecorationActive";
+const DECORATION_CONTEXT = "humanReplay.diffDecorationActive";
 
 type ResolveResult =
   | { kind: "ok"; range: vscode.Range; text: string; cleanParse: boolean }
@@ -183,7 +183,7 @@ export class DiffReplayController {
 
     s.lastServed = { range: resolved.range, text: resolved.text };
     const item = new vscode.InlineCompletionItem(resolved.text, resolved.range);
-    item.command = { command: "replayTab.diffReplayAccepted", title: "Replay Tab: next diff-replay step" };
+    item.command = { command: "humanReplay.diffReplayAccepted", title: "Human Replay: next diff-replay step" };
     return item;
   }
 
@@ -289,7 +289,7 @@ export class DiffReplayController {
       this.diverged = true;
       this.output.appendLine("[diff-replay] divergence detected — re-anchoring the remaining steps");
       void vscode.window.setStatusBarMessage(
-        "Replay Tab: you took over — the replay re-anchors to your edits",
+        "Human Replay: you took over — the replay re-anchors to your edits",
         4000,
       );
     }
@@ -364,7 +364,7 @@ export class DiffReplayController {
     void vscode.commands.executeCommand("setContext", DECORATION_CONTEXT, false);
     this.session = undefined;
     await vscode.window.showWarningMessage(
-      "Replay Tab: your edit changed the structure this replay targets — finish this symbol by hand.",
+      "Human Replay: your edit changed the structure this replay targets — finish this symbol by hand.",
       "OK",
     );
   }
