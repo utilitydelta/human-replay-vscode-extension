@@ -281,11 +281,17 @@ export class GuideRunner {
       return new vscode.Position(line, 0);
     }
 
-    // End of file, on a blank line separated from prior content by one empty line.
+    // End of file, on a blank line separated from prior content by one empty
+    // line. Only a create gets the separator EDIT — for a modify/delete whose
+    // symbol wasn't found, EOF is just a neutral place to leave the cursor while
+    // the verdict (landed / unresolvable) surfaces; mutating the file first
+    // would hand the human a stray blank line to clean up.
     const text = doc.getText();
-    const sep = separatorToInsert(text);
-    if (sep) {
-      await editor.edit((b) => b.insert(doc.positionAt(text.length), sep));
+    if (step.action === "create") {
+      const sep = separatorToInsert(text);
+      if (sep) {
+        await editor.edit((b) => b.insert(doc.positionAt(text.length), sep));
+      }
     }
     return doc.positionAt(doc.getText().length);
   }
@@ -440,6 +446,10 @@ export class GuideRunner {
       this.changed();
       this.output.appendLine(`[guide] step ${step.id}: already matches the sandbox — marked done`);
       vscode.window.showInformationMessage(`Human Replay: step ${step.id} already matches the sandbox — marked done.`);
+      // Flow into the next step like a completed walk would — a landed verdict
+      // shouldn't cost the human an extra click.
+      const next = this.pc.next();
+      if (next < this.steps.length) void this.runStep(next, clearDiagnostics);
       return;
     }
 
