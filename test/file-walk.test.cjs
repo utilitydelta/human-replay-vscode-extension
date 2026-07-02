@@ -20,7 +20,7 @@ const EXTERNALS = ["tree-sitter", "tree-sitter-rust", "tree-sitter-c-sharp", "tr
 const bundle = path.join(__dirname, ".file-walk.bundle.cjs");
 fs.writeFileSync(
   path.join(__dirname, ".file-walk.entry.ts"),
-  `export { planFileWalk } from "../src/disclosure/fileWalk";\n` +
+  `export { planFileWalk, resumeIndex } from "../src/disclosure/fileWalk";\n` +
     `export { RUST, CSHARP, TYPESCRIPT, TSX, PYTHON, MARKDOWN, HTML, CSS } from "../src/disclosure/language";\n`,
 );
 esbuild.buildSync({
@@ -31,7 +31,7 @@ esbuild.buildSync({
   platform: "node",
   external: EXTERNALS,
 });
-const { planFileWalk, RUST, CSHARP, TYPESCRIPT, TSX, PYTHON, MARKDOWN, HTML, CSS } = require(bundle);
+const { planFileWalk, resumeIndex, RUST, CSHARP, TYPESCRIPT, TSX, PYTHON, MARKDOWN, HTML, CSS } = require(bundle);
 test.after(() => {
   fs.rmSync(bundle, { force: true });
   fs.rmSync(path.join(__dirname, ".file-walk.entry.ts"), { force: true });
@@ -118,6 +118,21 @@ test("blank lines cut segments; adjacent lines group", () => {
       );
     });
   }
+});
+
+test("resume lands only on segment boundaries", () => {
+  const c = CORPUS[0]; // the rust corpus: 4 segments
+  const segs = planFileWalk(c.code, c.spec());
+  assert.strictEqual(resumeIndex(segs, ""), 0, "an empty target starts from the top");
+  let built = "";
+  for (const [i, s] of segs.entries()) {
+    built += s.sep + s.body;
+    assert.strictEqual(resumeIndex(segs, built), i + 1, `boundary after segment ${i}`);
+    if (i < segs.length - 1) {
+      assert.strictEqual(resumeIndex(segs, built + segs[i + 1].sep), undefined, "mid-segment prefix is a conflict");
+    }
+  }
+  assert.strictEqual(resumeIndex(segs, "unrelated bytes"), undefined, "a foreign file is a conflict");
 });
 
 test("no grammar → one whole-file segment; empty file → none", () => {

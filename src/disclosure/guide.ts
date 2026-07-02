@@ -15,9 +15,10 @@
 
 import { Invariant, Retrospective } from "../retrospective/retrospective";
 
-// "create-file" drops a brand-new file whole from the sandbox — one gesture, no
-// symbol walk. For boilerplate-heavy new files (tests, fixtures) tabbing node by
-// node teaches nothing; the guide opts such files out at generation time.
+// "create-file" discloses a brand-new file via the file walk (fileWalk.ts):
+// one gesture per blank-line group of top-level items, the full descend-and-fill
+// walk inside bare functions. The step is still whole-file in the guide — the
+// engine owns the cut, not the author.
 export type StepAction = "create" | "modify" | "delete" | "create-file" | "patch";
 
 export interface ReplayStep {

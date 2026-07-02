@@ -89,3 +89,20 @@ export function planFileWalk(text: string, spec: LanguageSpec | undefined): File
   segments.push(toSegment(text, start, text.length));
   return segments;
 }
+
+/**
+ * Where a partially-built target file resumes in the walk: the number of whole
+ * segments already landed. The walk only ever appends full segments, so a prior
+ * session's partial build is a byte-prefix ending exactly on a segment boundary.
+ * Anything else (a mid-walk cancel, an unrelated file at the same path) returns
+ * undefined — a genuine conflict the human resolves, never a guess.
+ */
+export function resumeIndex(segments: FileSegment[], existing: string): number | undefined {
+  let built = "";
+  if (existing === built) return 0;
+  for (let i = 0; i < segments.length; i++) {
+    built += segments[i].sep + segments[i].body;
+    if (existing === built) return i + 1;
+  }
+  return undefined;
+}

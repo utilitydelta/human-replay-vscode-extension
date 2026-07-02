@@ -7,6 +7,8 @@ import { ReplayOrchestrator } from "./orchestrator";
 import { parseRoot } from "./diff";
 import { findItemByName, leadingTriviaStart, walkableSource, SyntaxNode } from "./walk";
 import { planCreateInsertion, separatorToInsert, splitLeadingPad } from "./insertion";
+import { FileSegment, planFileWalk, resumeIndex } from "./fileWalk";
+import { Retrospective } from "../retrospective/retrospective";
 import { ProgramCounter, StepStatus } from "./programCounter";
 import { extractSymbol, stepAlreadyLanded } from "./resume";
 import { LanguageSpec, languageForFile } from "./language";
@@ -37,6 +39,12 @@ export class GuideRunner {
   // humanReplay.sandboxRoot config is the fallback so a hand-configured run
   // still works.
   private sessionSandboxRoot: string | undefined;
+  // A create-file step's walk in flight: the segment plan and the position in
+  // it. Each segment is one engine run (walk or block ghost); completeCurrent
+  // chains the next until the plan is spent, then the step itself completes.
+  private fileWalk:
+    | { stepId: string; at: number; segments: FileSegment[]; uri: vscode.Uri; spec: LanguageSpec | undefined; retro: Retrospective }
+    | undefined;
 
   constructor(
     private readonly output: vscode.OutputChannel,
@@ -66,17 +74,16 @@ export class GuideRunner {
     if (wasInFlight) {
       this.disclosure.cancel();
       this.orchestrator.cancelAll();
+      this.fileWalk = undefined;
     }
     this.output.appendLine(`[guide] step ${this.guide?.steps[i]?.id ?? i} skipped${wasInFlight ? " (walk cancelled)" : ""}`);
     this.changed();
-    if (wasInFlight) {
-      const next = this.pc.next();
-      if (next < this.steps.length) void this.runStep(next, () => {});
-    }
+    if (wasInFlight) this.flowInto(i);
   }
 
   /** A re-anchored continue collided — mark the in-flight step blocked. */
   markCurrentBlocked(): void {
+    this.fileWalk = undefined;
     if (this.pc.block()) this.changed();
   }
 
@@ -84,20 +91,62 @@ export class GuideRunner {
    *  in-flight mark so nothing can complete the cancelled step behind the
    *  human's back. The step keeps its status for a re-run. */
   cancelInFlight(): void {
+    this.fileWalk = undefined;
     if (this.pc.cancelInFlight()) this.changed();
   }
 
-  /** A step's interactive walk finished — advance the counter past it and flow
-   *  straight into the next step (open it, park the cursor, show its first ghost),
-   *  so the human tabs across step boundaries without clicking. Esc interrupts by
-   *  cancelling the teed-up walk. No-op when no guide step was in flight (a legacy
-   *  fixture command completing). The auto-advance keeps the just-set retrospective
-   *  visible — it passes a no-op clear, unlike a manual run. */
+  /** A step's interactive walk finished. Mid file walk, chain the next segment
+   *  instead — the step completes only when the plan is spent. Then advance the
+   *  counter and flow by the phase policy (flowInto). The auto-advance keeps the
+   *  just-set retrospective visible — it passes a no-op clear, unlike a manual
+   *  run. No-op when no guide step was in flight. */
   completeCurrent(): void {
+    const fw = this.fileWalk;
+    if (fw) {
+      fw.at++;
+      if (fw.at < fw.segments.length) {
+        void this.runNextSegment();
+        return;
+      }
+      this.fileWalk = undefined;
+      void this.saveFileWalkDoc(fw.uri);
+    }
+    const finished = this.pc.inFlightIndex;
     if (!this.pc.complete()) return;
     this.changed();
+    if (finished !== undefined) this.flowInto(finished);
+  }
+
+  // The one flow policy after a step resolves (completed, landed, or skipped).
+  // Within a phase, momentum: run the next step so the human tabs across step
+  // boundaries without clicking. At a phase boundary, STOP — the human reads
+  // the invariants and the retrospective, reviews what landed, and continues
+  // with an explicit gesture (the message button, the status bar, the tree).
+  // At scale a phase is a chapter, not a speed bump (feedback.md #2).
+  private flowInto(fromIndex: number): void {
     const next = this.pc.next();
-    if (next < this.steps.length) void this.runStep(next, () => {});
+    if (next >= this.steps.length) {
+      if (this.pc.isComplete) {
+        this.output.appendLine(`[guide] guide "${this.feature}" complete`);
+        void vscode.window.showInformationMessage(`Human Replay: guide "${this.feature}" complete — every step done or skipped.`);
+      }
+      return;
+    }
+    const from = this.guide?.steps[fromIndex];
+    const to = this.guide?.steps[next];
+    if (from && to && from.phase !== to.phase) {
+      const done = from.phase ?? "steps";
+      this.output.appendLine(`[guide] ${done} complete — paused before ${to.phase ?? "the next steps"}`);
+      void vscode.window
+        .showInformationMessage(`Human Replay: ${done} complete. Review what landed, then continue when ready.`, "Continue replay")
+        .then((choice) => {
+          if (choice !== "Continue replay") return;
+          const at = this.pc.next();
+          if (at < this.steps.length) void this.runStep(at, () => {});
+        });
+      return;
+    }
+    void this.runStep(next, () => {});
   }
 
   get loaded(): boolean {
@@ -226,12 +275,20 @@ export class GuideRunner {
     const editor = await vscode.window.showTextDocument(doc, { preview: false });
     const pos = await this.insertionPoint(editor, step, lineStr);
     if (!pos) return undefined;
-    editor.selection = new vscode.Selection(pos, pos);
-    editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+    await this.parkCursor(doc, pos);
     this.output.appendLine(
       `[guide] step ${step.id}: opened ${vscode.workspace.asRelativePath(doc.uri)} at line ${pos.line + 1}`,
     );
     return editor;
+  }
+
+  // Park the cursor through showTextDocument so the jump lands in VS Code's
+  // navigation history — Back must rewind a replay teleport (feedback.md #3).
+  // A bare `editor.selection =` writes no history entry. Step-level jumps only;
+  // engine-internal hunk-to-hunk moves stay out or twenty Tabs would mean
+  // twenty history entries.
+  private async parkCursor(doc: vscode.TextDocument, pos: vscode.Position): Promise<vscode.TextEditor> {
+    return vscode.window.showTextDocument(doc, { preview: false, selection: new vscode.Range(pos, pos) });
   }
 
   // Where to land the cursor. Land on the symbol if the target already has it —
@@ -347,12 +404,15 @@ export class GuideRunner {
     }
   }
 
-  // Drop a brand-new file whole from the sandbox — one gesture, no walk. The
-  // bytes are the real sandbox file verbatim (invariant 1); saved to disk so the
-  // resume derivation and the build see it immediately. A target file that
-  // already exists and differs is a genuine conflict: mark the step blocked and
-  // let the human decide (hand-merge or skip) — never overwrite.
-  private async runCreateFile(index: number, step: ReplayStep): Promise<void> {
+  // Disclose a brand-new file segment by segment — the file walk. The plan cuts
+  // the sandbox bytes into blank-line groups (fileWalk.ts, byte-exact); each
+  // segment lands as one gesture: the descend-and-fill walk for a bare function,
+  // the block ghost otherwise, a single patch hunk for a file with no grammar.
+  // The bytes are the real sandbox file verbatim (invariant 1). A target file
+  // that already exists resumes at a segment boundary when it is a prefix of the
+  // sandbox bytes; anything else is a genuine conflict — blocked, never
+  // overwritten (invariant 2).
+  private async runCreateFile(index: number, step: ReplayStep, wasMidFileWalk = false): Promise<void> {
     const rel = step.file.split(":")[0];
     const root = this.sandboxRoot;
     if (!root) {
@@ -367,16 +427,52 @@ export class GuideRunner {
     const ws = vscode.workspace.workspaceFolders?.[0];
     if (!ws) return;
     const targetUri = vscode.Uri.joinPath(ws.uri, rel);
-    let existing: string | undefined;
-    try {
-      existing = Buffer.from(await vscode.workspace.fs.readFile(targetUri)).toString("utf8");
-    } catch {
-      existing = undefined;
+    // Read the OPEN buffer first: mid-walk the file is dirty, and disk is stale
+    // until the walk's final save.
+    const open = vscode.workspace.textDocuments.find((d) => d.uri.toString() === targetUri.toString());
+    let existing = open?.getText();
+    if (existing === undefined) {
+      try {
+        existing = Buffer.from(await vscode.workspace.fs.readFile(targetUri)).toString("utf8");
+      } catch {
+        existing = undefined;
+      }
     }
 
     this.pc.begin(index);
     this.changed();
-    if (existing !== undefined && existing !== bytes) {
+
+    if (existing === bytes || bytes === "") {
+      // Already landed, or an empty sandbox file — nothing to disclose. Create
+      // the empty file if needed, mark done, flow.
+      if (existing === undefined) {
+        const edit = new vscode.WorkspaceEdit();
+        edit.createFile(targetUri, { ignoreIfExists: true });
+        await vscode.workspace.applyEdit(edit);
+      }
+      this.pc.markDone(index);
+      this.changed();
+      await this.saveFileWalkDoc(targetUri);
+      this.output.appendLine(`[guide] step ${step.id}: ${rel} ${existing === bytes ? "already matches the sandbox" : "is empty in the sandbox"} — marked done`);
+      this.flowInto(index);
+      return;
+    }
+
+    const spec = languageForFile(rel);
+    const segments = planFileWalk(bytes, spec);
+    const at = existing === undefined ? 0 : resumeIndex(segments, existing);
+    if (at === undefined || at >= segments.length) {
+      if (wasMidFileWalk && existing !== undefined) {
+        // Re-armed mid-segment: the buffer holds a half-built shell that sits on
+        // no boundary, but it is OUR build, not a foreign file. The patch surface
+        // lands the remainder deterministically, one hunk per Tab.
+        this.output.appendLine(`[guide] step ${step.id}: re-armed mid-segment — resuming ${rel} as a patch`);
+        const editor = await this.parkCursor(await vscode.workspace.openTextDocument(targetUri), new vscode.Position(0, 0));
+        await this.orchestrator.startPatch(editor, existing, bytes, step.retro);
+        return;
+      }
+      // A foreign file at the step's path is a genuine conflict — the human
+      // decides (hand-merge or skip), never an overwrite.
       this.pc.block();
       this.changed();
       this.output.appendLine(`[guide] step ${step.id}: ${rel} already exists and differs from the sandbox — blocked`);
@@ -388,17 +484,67 @@ export class GuideRunner {
     if (existing === undefined) {
       const edit = new vscode.WorkspaceEdit();
       edit.createFile(targetUri, { ignoreIfExists: true });
-      edit.insert(targetUri, new vscode.Position(0, 0), bytes);
       await vscode.workspace.applyEdit(edit);
     }
-    const doc = await vscode.workspace.openTextDocument(targetUri);
-    await doc.save();
-    await vscode.window.showTextDocument(doc, { preview: false });
-    this.output.appendLine(`[guide] step ${step.id}: dropped ${rel} whole (${bytes.length} bytes) from the sandbox`);
-    if (step.retro.question) {
-      void vscode.window.showInformationMessage(`Human Replay — ${step.symbol}: ${step.retro.question}`);
+    this.fileWalk = { stepId: step.id, at, segments, uri: targetUri, spec, retro: step.retro };
+    this.output.appendLine(
+      `[guide] step ${step.id}: file walk of ${rel} — ${segments.length} segment(s)${at > 0 ? `, resuming at ${at + 1}` : ""}`,
+    );
+    await this.runNextSegment();
+  }
+
+  // Land the file walk's current segment: park at end-of-file (the walk builds
+  // strictly downward), type the separator and the first-line pad as real bytes
+  // (a whitespace-leading ghost can't be Tab-accepted), then hand the content to
+  // the engine that fits it. Completion flows back through completeCurrent.
+  private async runNextSegment(): Promise<void> {
+    const fw = this.fileWalk;
+    if (!fw) return;
+    const seg = fw.segments[fw.at];
+    const doc = await vscode.workspace.openTextDocument(fw.uri);
+    // The step's retrospective gates the whole file, so it rides the last segment.
+    const retro = fw.at === fw.segments.length - 1 ? fw.retro : undefined;
+    const first = seg.body.split("\n")[0];
+    this.output.appendLine(
+      `[guide] step ${fw.stepId}: segment ${fw.at + 1}/${fw.segments.length} — ${first.slice(0, 60)}`,
+    );
+
+    if (!fw.spec) {
+      // No grammar (config files, lockfiles): the patch surface lands the whole
+      // segment as one hunk — deterministic, parse-free, one Tab.
+      const text = doc.getText();
+      const editor = await this.parkCursor(doc, new vscode.Position(0, 0));
+      await this.orchestrator.startPatch(editor, text, text + seg.sep + seg.body, retro);
+      return;
     }
-    this.completeCurrent(); // flows into the next step — file drops keep the momentum
+
+    const { pad, rest } = splitLeadingPad(seg.body);
+    const lead = seg.sep + pad;
+    if (lead) {
+      const opened = await vscode.window.showTextDocument(doc, { preview: false });
+      const end = doc.positionAt(doc.getText().length);
+      await opened.edit((b) => b.insert(end, lead));
+    }
+    const cursor = doc.positionAt(doc.getText().length);
+    const editor = await this.parkCursor(doc, cursor);
+
+    if (walkableSource(rest, fw.spec, cursor.character)) {
+      await this.disclosure.start(editor, rest, retro, fw.spec);
+    } else {
+      // Non-fn segment (imports, a struct, a comment block): one block ghost,
+      // real sandbox bytes, one Tab — the orchestrator's no-walk guard routes it.
+      await this.orchestrator.start(editor, "", rest, retro, true, fw.spec);
+    }
+  }
+
+  // Persist the finished file so the resume derivation and the build see it.
+  private async saveFileWalkDoc(uri: vscode.Uri): Promise<void> {
+    try {
+      const doc = await vscode.workspace.openTextDocument(uri);
+      await doc.save();
+    } catch {
+      // The buffer may already be gone (window closed mid-save) — nothing to do.
+    }
   }
 
   // Land a file's residual line-grain delta — the bits below symbol grain the
@@ -426,16 +572,14 @@ export class GuideRunner {
       this.pc.markDone(index);
       this.changed();
       this.output.appendLine(`[guide] step ${step.id}: already matches the sandbox — marked done`);
-      const next = this.pc.next();
-      if (next < this.steps.length) void this.runStep(next, () => {});
+      this.flowInto(index);
       return;
     }
     this.pc.begin(index);
     this.changed();
     // Line mode anchors on the whole file: park the cursor at file start so the
     // session's anchor offset is 0.
-    const top = new vscode.Position(0, 0);
-    editor.selection = new vscode.Selection(top, top);
+    await this.parkCursor(editor.document, new vscode.Position(0, 0));
     this.output.appendLine(`[guide] step ${step.id} (${index + 1}/${this.steps.length}) patch ${rel}`);
     await this.orchestrator.startPatch(editor, targetText, sandboxText, step.retro);
   }
@@ -461,8 +605,18 @@ export class GuideRunner {
       vscode.window.showWarningMessage("Human Replay: no such step in the loaded guide.");
       return;
     }
+    // A manual run while a step is mid-flight replaces it — tear the live
+    // engines down first so two walks never fight over one buffer. Clicking the
+    // in-flight step itself is the re-arm gesture: park the cursor back on the
+    // work and show the ghost again (feedback.md #4).
+    const wasMidFileWalk = this.pc.inFlightIndex === index && this.fileWalk !== undefined;
+    if (this.pc.inFlightIndex !== undefined) {
+      this.disclosure.cancel();
+      this.orchestrator.cancelAll();
+      this.fileWalk = undefined;
+    }
     if (step.action === "create-file") {
-      await this.runCreateFile(index, step); // whole-file bytes — no language needed
+      await this.runCreateFile(index, step, wasMidFileWalk);
       return;
     }
     if (step.action === "patch") {
@@ -492,9 +646,8 @@ export class GuideRunner {
       this.output.appendLine(`[guide] step ${step.id}: already matches the sandbox — marked done`);
       vscode.window.showInformationMessage(`Human Replay: step ${step.id} already matches the sandbox — marked done.`);
       // Flow into the next step like a completed walk would — a landed verdict
-      // shouldn't cost the human an extra click.
-      const next = this.pc.next();
-      if (next < this.steps.length) void this.runStep(next, clearDiagnostics);
+      // shouldn't cost the human an extra click. Same phase policy as any flow.
+      this.flowInto(index);
       return;
     }
 
