@@ -173,6 +173,19 @@ for (const { name, target, symbol, expectOrder } of PLACEMENT) {
   });
 }
 
+test("planCreateInsertion: documented method — cursor parks at column 0, symbol supplies its own pad", () => {
+  // extractSymbol starts a documented symbol at its LINE START, pad included; a
+  // scaffold pad on top would double-indent the first line.
+  const sandbox = `impl Cache {\n    pub fn a(&self) -> u64 {\n        self.bytes\n    }\n\n    /// Parks a batch.\n    #[inline]\n    pub fn parked(&mut self, n: u64) {\n        self.bytes += n;\n    }\n}\n`;
+  const target = `impl Cache {\n    pub fn a(&self) -> u64 {\n        self.bytes\n    }\n}\n`;
+  const plan = planCreateInsertion(target, sandbox, "parked", RUST);
+  assert.strictEqual(plan.kind, "container");
+  assert.strictEqual(plan.scaffold, "\n\n", "no scaffold pad — the symbol carries its own");
+  const symbolBytes = "    /// Parks a batch.\n    #[inline]\n    pub fn parked(&mut self, n: u64) {\n        self.bytes += n;\n    }";
+  const built = landCreate(target, plan, symbolBytes);
+  assert.strictEqual(built, sandbox, "target becomes byte-identical to the sandbox");
+});
+
 test("planCreateInsertion: the landed method is byte-identical to the sandbox symbol at depth", () => {
   const target = `impl Cache {\n    pub fn a(&self) -> u64 {\n        self.bytes\n    }\n}\n`;
   const plan = planCreateInsertion(target, SANDBOX_RS, "parked", RUST);

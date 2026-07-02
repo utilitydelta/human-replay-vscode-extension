@@ -12,7 +12,7 @@
 // target, the plan is `blocked` — surfaced to the human, never guessed.
 
 import { LanguageSpec } from "./language";
-import { SyntaxNode, namedChildren } from "./walk";
+import { SyntaxNode, leadingTriviaStart, namedChildren } from "./walk";
 import { parseRoot } from "./diff";
 
 // The file's line ending — scaffolds and separators must match it, or a CRLF
@@ -195,6 +195,13 @@ export function planCreateInsertion(
   if (!atRoot) anchor ??= targetKids[targetKids.length - 1]; // no named predecessor: land last
   if (atRoot && !anchor) return { kind: "top-level" }; // root fallback stays end-of-file
 
+  // A symbol with leading trivia (doc comments, attributes) extracts from its
+  // LINE START, so its bytes carry their own first-line indentation — the
+  // scaffold must not add a pad on top of it (the cursor parks at column 0 and
+  // the symbol supplies its own column).
+  const holder = itemIdx >= 0 ? sibs[itemIdx] : item;
+  const ownPad = leadingTriviaStart(sandboxText, holder.startIndex, spec) !== holder.startIndex;
+
   const eol = eolOf(targetText);
   const braced = !atRoot && targetText[body.endIndex - 1] === "}";
   if (anchor) {
@@ -209,7 +216,7 @@ export function planCreateInsertion(
       return { kind: "blocked", reason: `container \`${header}\` is single-line — no landing line for the new symbol` };
     }
     const indent = colOf(targetText, anchor.startIndex);
-    const scaffold = `${eol}${eol}${" ".repeat(indent)}`;
+    const scaffold = `${eol}${eol}${ownPad ? "" : " ".repeat(indent)}`;
     return { kind: "container", start: at, end: at, scaffold, cursorAt: at + scaffold.length, indent, container: label };
   }
 
@@ -219,13 +226,14 @@ export function planCreateInsertion(
   const childIndent = colOf(targetText, target!.node.startIndex) + spec.indentWidth;
   const closeIndent = colOf(targetText, target!.node.startIndex);
   const open = body.startIndex + 1;
-  const scaffold = `${eol}${" ".repeat(childIndent)}${eol}${" ".repeat(closeIndent)}`;
+  const cursorPad = ownPad ? "" : " ".repeat(childIndent);
+  const scaffold = `${eol}${cursorPad}${eol}${" ".repeat(closeIndent)}`;
   return {
     kind: "container",
     start: open,
     end: body.endIndex - 1,
     scaffold,
-    cursorAt: open + eol.length + childIndent,
+    cursorAt: open + eol.length + cursorPad.length,
     indent: childIndent,
     container: label,
   };

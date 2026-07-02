@@ -182,6 +182,17 @@ export function computeSteps(src: string, spec: LanguageSpec = RUST, baseIndent 
   const fn = findFunction(root, spec);
   if (!fn) throw new Error("no function node in source");
 
+  // Leading trivia (doc comments, attributes) rides the first step as a block —
+  // emitted verbatim ahead of the fn shell, so a documented method still walks
+  // and a created #[test] still runs. A trivia-carrying source starts at its
+  // line start, so the fn's column comes from the source itself, not the cursor.
+  // (bareText excludes the prefix: divergence recovery re-appends the shell only.)
+  const prefix = src.slice(0, fn.startIndex);
+  if (prefix !== "") {
+    baseIndent = 0;
+    for (let k = fn.startIndex - 1; k >= 0 && src[k] !== "\n"; k--) baseIndent++;
+  }
+
   // Raw emissions in pre-order: text and the cursor it is inserted at, in the
   // coordinates of the buffer as it exists at that moment. Built by splicing a
   // real string so positions are exact.
@@ -227,7 +238,7 @@ export function computeSteps(src: string, spec: LanguageSpec = RUST, baseIndent 
     return cursor + 1 + indent + 1;
   }
 
-  emit(fn, 0, baseIndent, "", "ROOT");
+  emit(fn, 0, baseIndent, prefix, "ROOT");
 
   // cursorOffset of step i = insertPos of step i+1 (the next insertion point);
   // last step's cursor lands at the end of its own insert.

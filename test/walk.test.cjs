@@ -197,11 +197,11 @@ for (const { name, code } of CORPUS) {
 const WALKABLE = [
   { name: "bare fn", src: "fn a() {\n    1\n}", want: true },
   { name: "pub fn (visibility is part of the item)", src: "pub fn a(&self) {\n    1\n}", want: true },
-  { name: "doc comment → not walkable (would be dropped)", src: "/// doc\nfn a() {}", want: false },
-  { name: "#[test] attribute → not walkable (test would never run)", src: "#[test]\nfn t() {}", want: false },
+  { name: "doc comment rides the first step as a block → walkable", src: "/// doc\nfn a() {\n    1\n}", want: true },
+  { name: "#[test] attribute rides the first step → walkable, test still runs", src: "#[test]\nfn t() {\n    1;\n}", want: true },
   { name: "struct → not walkable (no fn node)", src: "pub struct S {\n    a: u64,\n}", want: false },
   { name: "const → not walkable", src: "const N: u64 = 42;", want: false },
-  { name: "fn wrapped in a mod → not walkable (wrapper would be dropped)", src: "mod m {\n    fn a() {}\n}", want: false },
+  { name: "fn wrapped in a mod → not walkable (close brace would be dropped)", src: "mod m {\n    fn a() {}\n}", want: false },
   { name: "blank line in the body → not walkable (sibling lead collapses it)", src: "fn a() {\n    let x = 1;\n\n    x\n}", want: false },
   { name: "empty source → not walkable", src: "", want: false },
 ];
@@ -219,6 +219,27 @@ test("walkableSource: depth-4 method is walkable at baseIndent 4, not at 0", () 
   assert.strictEqual(walkableSource(atDepth, undefined, 4), true);
   assert.strictEqual(walkableSource(atDepth, undefined, 0), false);
 });
+
+// --- trivia rides the first step: rebuild byte-exact, docs and attrs intact ---
+// A documented method extracts from its LINE START (first-line pad included) and
+// the fn's column comes from the source — the baseIndent param is ignored, so
+// the same bytes rebuild exactly wherever the cursor was parked (column 0).
+for (const { name, code } of CORPUS) {
+  const documented = `/// Documented.\n#[inline]\n${code}`;
+  test(`${name}: trivia block + walk rebuilds byte-exact with docs and attrs intact`, () => {
+    const final = replay(computeSteps(documented)).at(-1).buf;
+    assert.strictEqual(final, documented);
+  });
+
+  const atDepth = `    /// Documented.\n    #[inline]\n    ${code
+    .split("\n")
+    .map((l, i) => (i === 0 || l === "" ? l : `    ${l}`))
+    .join("\n")}`;
+  test(`${name}: depth-4 trivia symbol rebuilds byte-exact regardless of baseIndent param`, () => {
+    assert.strictEqual(replay(computeSteps(atDepth, undefined, 0)).at(-1).buf, atDepth);
+    assert.strictEqual(replay(computeSteps(atDepth, undefined, 7)).at(-1).buf, atDepth);
+  });
+}
 
 // --- leadingTriviaStart: the symbol owns its doc comments & attributes -------
 // tree-sitter-rust models /// // and #[...] above an item as PRECEDING SIBLINGS,
