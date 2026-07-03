@@ -444,7 +444,7 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand("humanReplay.toggle", async () => {
       const cfg = vscode.workspace.getConfiguration("humanReplay");
-      const next = !cfg.get<boolean>("enabled", true);
+      const next = !cfg.get<boolean>("enabled", false);
       await cfg.update(
         "enabled",
         next,

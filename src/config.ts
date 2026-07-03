@@ -17,7 +17,7 @@ export interface Config {
 export function readConfig(): Config {
   const c = vscode.workspace.getConfiguration("humanReplay");
   return {
-    enabled: c.get<boolean>("enabled", true),
+    enabled: c.get<boolean>("enabled", false),
     apiBase: c.get<string>("apiBase", "http://localhost:11434"),
     model: c.get<string>("model", "qwen2.5-coder:1.5b-base"),
     template: c.get<TemplateName>("template", "auto"),

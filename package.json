@@ -175,8 +175,8 @@
       "properties": {
         "humanReplay.enabled": {
           "type": "boolean",
-          "default": true,
-          "description": "Enable inline autocomplete suggestions."
+          "default": false,
+          "description": "Enable local FIM autocomplete (off on first open — the model layer is opt-in). Turn on via 'Human Replay: Toggle Autocomplete', which also walks the setup: server, model choice, download."
         },
         "humanReplay.apiBase": {
           "type": "string",
