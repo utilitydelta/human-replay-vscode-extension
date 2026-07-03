@@ -151,16 +151,15 @@ export class DiffReplayController {
     return asInsertion(step.oldText, step.replacement) ? "insert" : "block";
   }
 
-  // Which steps ride the decoration accept (Tab → acceptDecoration) instead of the
-  // native inline surface: single-line dramatic replaces, EVERY block, and EVERY
-  // line-mode (patch) hunk. The native surface refuses multi-line replacements
-  // from a mid-line range and drops programmatic triggers unpredictably
-  // (F5-proven twice: strike showed / hunk armed, no ghost, Tab dead) — the
-  // decoration surface is ours and has never failed to render.
-  private ridesDecoration(s: Session, step: ReplayStep): boolean {
-    if (s.lineMode) return true;
-    const surface = this.surfaceOf(step);
-    return (s.dramatic && surface === "replace") || surface === "block";
+  // Every diff-replay step rides the decoration accept (Tab → acceptDecoration).
+  // The native inline surface dropped programmatically-armed ghosts three
+  // separate times (a create-file segment, a patch hunk, a block insert):
+  // armed, caret positioned, nothing rendered, Tab dead — and re-triggering is
+  // equally ignorable. The decoration surface is ours and has never failed to
+  // render. The disclosure walk keeps native ghosts — its human-paced,
+  // cursor-gated arms render reliably.
+  private ridesDecoration(_s: Session, _step: ReplayStep): boolean {
+    return true;
   }
 
   // Resolve the current step's live document range by re-anchoring against the
