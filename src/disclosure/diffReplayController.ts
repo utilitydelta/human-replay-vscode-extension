@@ -51,6 +51,10 @@ interface Session {
   // (arithmetic + content legs; the file may have no grammar at all). The spec
   // field is unused in this mode.
   lineMode?: boolean;
+  // An armed PENDING INSERT: the current step's bytes are already written into
+  // the buffer, tinted, awaiting Tab (keep) or Shift+Esc (remove). Deltas are
+  // booked at write time, so the range tracks human edits via noteChange.
+  pending?: { start: number; length: number };
 }
 
 const DECORATION_CONTEXT = "humanReplay.diffDecorationActive";
@@ -84,6 +88,9 @@ export class DiffReplayController {
   // reused; the incoming text is set per-range via renderOptions.
   private readonly doomed: vscode.TextEditorDecorationType;
   private readonly incoming: vscode.TextEditorDecorationType;
+  // Pending-insert tint: the incoming bytes live in the buffer, readable with
+  // real syntax highlighting, until the human keeps or removes them.
+  private readonly pendingTint: vscode.TextEditorDecorationType;
   // The gesture hint + hunk counter, ambient while a session runs. The native
   // ghost is VS Code's rendering (nothing can be appended to it), so the
   // status bar is where those hunks' gestures live; decoration hunks carry the
@@ -96,6 +103,10 @@ export class DiffReplayController {
       backgroundColor: "rgba(248, 81, 73, 0.18)",
     });
     this.incoming = vscode.window.createTextEditorDecorationType({});
+    this.pendingTint = vscode.window.createTextEditorDecorationType({
+      backgroundColor: "rgba(63, 185, 80, 0.14)",
+      isWholeLine: true,
+    });
     this.gestures = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
   }
 
@@ -103,6 +114,7 @@ export class DiffReplayController {
     this.gestures.dispose();
     this.doomed.dispose();
     this.incoming.dispose();
+    this.pendingTint.dispose();
   }
 
   private updateGestureHint(): void {
@@ -281,6 +293,13 @@ export class DiffReplayController {
     this.output.appendLine(`[diff-replay] cancelled at step ${this.session.index}`);
     this.gestures.hide();
     const editor = vscode.window.activeTextEditor;
+    // Unratified pending bytes must not survive a cancel (fire-and-forget:
+    // the session is going away either way; a failure logs).
+    if (this.session.pending && editor && editor.document.uri.toString() === this.session.uri.toString()) {
+      void this.removePending(editor).catch((e) =>
+        this.output.appendLine(`[diff-replay] pending cleanup failed: ${e instanceof Error ? e.message : String(e)}`),
+      );
+    }
     if (editor) this.clearDecorations(editor);
     void vscode.commands.executeCommand("setContext", DECORATION_CONTEXT, false);
     void vscode.commands.executeCommand("setContext", ACTIVE_CONTEXT, false);
@@ -350,6 +369,14 @@ export class DiffReplayController {
       s.anchorOffset = w.anchorOffset;
       s.symbolLen = w.symbolLen;
 
+      // Keep the pending range on its bytes too, or a skip after a human edit
+      // above it would delete the wrong span.
+      if (s.pending) {
+        const delta = c.text.length - c.rangeLength;
+        if (c.rangeOffset + c.rangeLength <= s.pending.start) s.pending.start += delta;
+        else if (c.rangeOffset < s.pending.start + s.pending.length) s.pending.length += delta;
+      }
+
       const doomed = s.lastServed?.range;
       if (doomed && c.range.start.line <= doomed.end.line && doomed.start.line <= c.range.end.line) {
         this.editedCurrentLine = true; // they're editing the very line being replaced
@@ -395,6 +422,12 @@ export class DiffReplayController {
       const res = this.resolveCurrent(editor.document);
       if (res.kind === "skip") return; // nothing serveable; leave the buffer to the human
 
+      // A pending insert's bytes are already applied — the settle only needs
+      // to repaint the (possibly shifted) tint, never re-resolve or re-apply.
+      if (s.pending) {
+        this.showPending(editor);
+        return;
+      }
       // Re-anchor only off a CLEAN parse — a half-typed line resolves to a garbage
       // range, so never re-render/serve from one.
       if (res.kind === "ok" && res.cleanParse) {
@@ -458,11 +491,16 @@ export class DiffReplayController {
     const step = s?.steps[s.index];
     if (!s || !step) return;
     this.clearSettle();
-    s.index++;
-    this.editedCurrentLine = false;
-    this.clearDecorations(editor);
-    this.output.appendLine(`[diff-replay] hunk ${s.index}/${s.steps.length} skipped by the human`);
-    this.renderCurrent(editor);
+    const removal = s.pending ? this.removePending(editor) : Promise.resolve();
+    void removal
+      .then(() => {
+        s.index++;
+        this.editedCurrentLine = false;
+        this.clearDecorations(editor);
+        this.output.appendLine(`[diff-replay] hunk ${s.index}/${s.steps.length} skipped by the human`);
+        this.renderCurrent(editor);
+      })
+      .catch((e) => this.output.appendLine(`[diff-replay] skip failed: ${e instanceof Error ? e.message : String(e)}`));
   }
 
   // Single trigger path: a cursor landing on the current step's range start asks
@@ -510,6 +548,14 @@ export class DiffReplayController {
       this.complete(editor);
       return;
     }
+    if (this.surfaceOf(s.steps[s.index]) === "insert") {
+      // Pure inserts arm as PENDING BYTES: the body goes into the buffer
+      // tinted green — full preview, real syntax highlighting, our surface.
+      void this.armPendingInsert(editor, resolved.range.start, resolved.text).catch((e) => {
+        this.output.appendLine(`[diff-replay] pending insert failed: ${e instanceof Error ? e.message : String(e)}`);
+      });
+      return;
+    }
     if (this.ridesDecoration(s, s.steps[s.index])) {
       this.renderDecoration(editor, resolved.range, resolved.text, true);
       return;
@@ -531,6 +577,73 @@ export class DiffReplayController {
     // chains sessions accept-to-arm). One more nudge on the next tick lands
     // after the accept settles; the provider gates it, so a stray is harmless.
     setTimeout(() => void vscode.commands.executeCommand("editor.action.inlineSuggest.trigger"), 50);
+  }
+
+  // Write the insert's bytes at the point, tinted, and book the deltas NOW —
+  // the hunk is applied; Tab confirms it, Shift+Esc deletes it back out. The
+  // write is flagged via lastServed so noteChange reads it as ours.
+  private async armPendingInsert(editor: vscode.TextEditor, at: vscode.Position, text: string): Promise<void> {
+    const s = this.session;
+    if (!s) return;
+    s.lastServed = { range: new vscode.Range(at, at), text };
+    const applied = await editor.edit((b) => b.insert(at, text));
+    if (!applied) throw new Error("pending insert edit rejected");
+    const start = editor.document.offsetAt(at);
+    s.symbolLen += text.length;
+    s.selfDelta += text.length;
+    s.pending = { start, length: text.length };
+    this.showPending(editor);
+    void vscode.commands.executeCommand("setContext", DECORATION_CONTEXT, true);
+    this.updateGestureHint();
+    this.output.appendLine(
+      `[diff-replay] step ${s.index + 1}/${s.steps.length} armed: pending bytes at line ${at.line + 1} (${text.split("\n").length - 1} line(s))`,
+    );
+    editor.selection = new vscode.Selection(at, at);
+    revealCursor(editor, at);
+  }
+
+  // (Re)paint the pending range — also the settle path's re-render, since the
+  // range tracks human edits via noteChange.
+  private showPending(editor: vscode.TextEditor): void {
+    const s = this.session;
+    if (!s?.pending) return;
+    const start = editor.document.positionAt(s.pending.start);
+    const end = editor.document.positionAt(s.pending.start + s.pending.length);
+    editor.setDecorations(this.pendingTint, [new vscode.Range(start, end)]);
+    const firstLineEnd = editor.document.lineAt(start.line).range.end;
+    editor.setDecorations(this.incoming, [
+      {
+        range: new vscode.Range(firstLineEnd, firstLineEnd),
+        renderOptions: { after: { contentText: "  ⟵ incoming (Tab keeps · Shift+Esc removes)", color: "#3fb950", fontStyle: "italic" } },
+      },
+    ]);
+  }
+
+  // Confirm the pending bytes: they are already in the buffer and booked, so
+  // keeping them is pure bookkeeping.
+  private keepPending(editor: vscode.TextEditor): void {
+    const s = this.session!;
+    s.pending = undefined;
+    s.index++;
+    this.diverged = false;
+    this.editedCurrentLine = false;
+    this.clearDecorations(editor);
+    editor.setDecorations(this.pendingTint, []);
+    this.output.appendLine(`[diff-replay] step ${s.index}/${s.steps.length} pending bytes kept`);
+    this.renderCurrent(editor);
+  }
+
+  // Remove the pending bytes and un-book them — the human declined this hunk.
+  private async removePending(editor: vscode.TextEditor): Promise<void> {
+    const s = this.session!;
+    const p = s.pending!;
+    s.pending = undefined;
+    const range = new vscode.Range(editor.document.positionAt(p.start), editor.document.positionAt(p.start + p.length));
+    s.lastServed = { range, text: "" };
+    await editor.edit((b) => b.delete(range));
+    s.symbolLen -= p.length;
+    s.selfDelta -= p.length;
+    editor.setDecorations(this.pendingTint, []);
   }
 
   // --- dramatic mode: render the change as a visual diff ---------------------
@@ -603,6 +716,11 @@ export class DiffReplayController {
     const s = this.session;
     if (!s) return; // only reachable while a decoration is shown (DECORATION_CONTEXT set)
     this.clearSettle();
+    if (s.pending) {
+      // The bytes are already in the buffer — Tab confirms, no re-apply.
+      this.keepPending(editor);
+      return;
+    }
     const resolved = this.resolveCurrent(editor.document);
     if (resolved.kind === "collision") {
       const action = this.collisionAction(resolved.cleanParse);
@@ -645,6 +763,7 @@ export class DiffReplayController {
   private clearDecorations(editor: vscode.TextEditor): void {
     editor.setDecorations(this.doomed, []);
     editor.setDecorations(this.incoming, []);
+    editor.setDecorations(this.pendingTint, []);
   }
 
   // Single completion path for both modes: clear UI, drop the session, fire the hook.
