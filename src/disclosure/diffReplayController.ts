@@ -537,9 +537,14 @@ export class DiffReplayController {
       lines.length > 1
         ? `  ⟶  ${lines[0].trim()} … (+${lines.length - 1} more line${lines.length > 2 ? "s" : ""} — Tab applies · Shift+Esc skips)`
         : `  ⟶  ${text}   (Tab · Shift+Esc skips)`;
+    // Anchor the hint at the end of the range's FIRST line. An `after`
+    // attachment renders at the range end, and a multi-line hunk's range ends
+    // past its trailing newline — the hint would land on the next content
+    // line, shoving it sideways two lines below the strike.
+    const firstLineEnd = editor.document.lineAt(range.start.line).range.end;
     editor.setDecorations(this.incoming, [
       {
-        range,
+        range: new vscode.Range(firstLineEnd, firstLineEnd),
         renderOptions: { after: { contentText: hint, color: "#3fb950", fontStyle: "italic" } },
       },
     ]);
