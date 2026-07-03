@@ -134,15 +134,28 @@ export class GuideRunner {
       void this.saveFileWalkDoc(fw.uri);
     }
     const finished = this.pc.inFlightIndex;
-    if (!this.pc.complete()) return;
+    if (!this.pc.complete()) {
+      this.output.appendLine("[guide] engine completion with no step in flight — ignored");
+      return;
+    }
     this.changed();
     if (finished !== undefined) {
-      this.verifySymbolLanding(finished);
+      this.output.appendLine(`[guide] step ${this.guide?.steps[finished]?.id ?? finished} complete`);
+      // The verify and the save are bystanders: neither may strand the flow —
+      // an exception between completion and flowInto froze the replay with no
+      // trace once already.
+      try {
+        this.verifySymbolLanding(finished);
+      } catch (e) {
+        this.output.appendLine(`[guide] landing verify failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
       // Persist what landed: symbol steps edit the buffer and nothing else
       // saves it, so disk lags the session — resume derivation and any
       // out-of-band read (build, forensics) see stale bytes until a manual
       // Ctrl+S. The file walk already saves; match it.
-      void this.saveStepDoc(finished);
+      this.saveStepDoc(finished).catch((e) => {
+        this.output.appendLine(`[guide] step save failed: ${e instanceof Error ? e.message : String(e)}`);
+      });
       this.flowInto(finished);
     }
   }
@@ -210,6 +223,7 @@ export class GuideRunner {
         });
       return;
     }
+    this.output.appendLine(`[guide] flowing into step ${to?.id ?? next}`);
     void this.runStep(next, () => {});
   }
 
