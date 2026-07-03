@@ -152,11 +152,13 @@ export class DiffReplayController {
   }
 
   // Which steps ride the decoration accept (Tab → acceptDecoration) instead of the
-  // native inline surface: single-line dramatic replaces, and EVERY block. The
-  // native surface refuses to render a multi-line replacement whose range starts
-  // mid-line (F5-proven: strike showed, no ghost, Tab dead-keyed to an indent), so
-  // blocks strike red and Tab applies — same gesture as block delete.
+  // native inline surface: single-line dramatic replaces, EVERY block, and EVERY
+  // line-mode (patch) hunk. The native surface refuses multi-line replacements
+  // from a mid-line range and drops programmatic triggers unpredictably
+  // (F5-proven twice: strike showed / hunk armed, no ghost, Tab dead) — the
+  // decoration surface is ours and has never failed to render.
   private ridesDecoration(s: Session, step: ReplayStep): boolean {
+    if (s.lineMode) return true;
     const surface = this.surfaceOf(step);
     return (s.dramatic && surface === "replace") || surface === "block";
   }
