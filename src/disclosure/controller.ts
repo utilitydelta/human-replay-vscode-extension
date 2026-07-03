@@ -473,7 +473,10 @@ export class DisclosureController {
   async continueWalk(editor: vscode.TextEditor): Promise<void> {
     // Tab re-entrancy latch: the step only advances after the awaited edit, so a
     // second Tab mid-flight would append the same node twice.
-    if (this.continuing) return;
+    if (this.continuing) {
+      this.output.appendLine("[disclosure] tab ignored — a continue is already in flight");
+      return;
+    }
     this.continuing = true;
     try {
       await this.continueWalkInner(editor);
@@ -485,8 +488,16 @@ export class DisclosureController {
   private async continueWalkInner(editor: vscode.TextEditor): Promise<void> {
     const s = this.session;
     const step = s?.current();
-    if (!s || !step) return;
-    if (editor.document.uri.toString() !== s.uri.toString()) return; // never write another file
+    // Every decline logs: a Tab the keybinding consumed but the walk ignored
+    // reads as a dead key at the keyboard, and a silent exit here is invisible.
+    if (!s || !step) {
+      this.output.appendLine("[disclosure] tab: no active walk step");
+      return;
+    }
+    if (editor.document.uri.toString() !== s.uri.toString()) {
+      this.output.appendLine("[disclosure] tab: focus is on another file"); // never write another file
+      return;
+    }
     this.clearSettle();
     this.recoverySettled = true; // an explicit Tab — the next ghost may show at once
     const symbolText = this.extractSymbol(editor.document);
@@ -504,7 +515,7 @@ export class DisclosureController {
     }
     const edit = symbolText !== undefined ? appendEdit(symbolText, step.parentKey, step.bareText, s.spec) : null;
     if (!edit) {
-      await this.surfaceCollision();
+      this.surfaceCollision();
       return;
     }
     const start = editor.document.positionAt(s.anchorOffset + edit.start);
@@ -538,12 +549,14 @@ export class DisclosureController {
 
   // The next node has nowhere to land — its parent in the tree is gone. Mark the
   // step blocked (panel) and let the human end the symbol and finish it by hand.
-  private async surfaceCollision(): Promise<void> {
+  // Fire-and-forget on purpose: awaiting the toast held the Tab re-entrancy
+  // latch until the human clicked OK — an unnoticed notification dead-keyed
+  // every later Tab.
+  private surfaceCollision(): void {
     this.onCollision?.();
     this.output.appendLine("[disclosure] collision: next node's parent is gone — surfacing");
-    await vscode.window.showWarningMessage(
+    void vscode.window.showWarningMessage(
       "Human Replay: the next node's place in the tree changed too much to fill automatically — finish this symbol by hand.",
-      "OK",
     );
     this.end();
   }

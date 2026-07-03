@@ -138,8 +138,21 @@ export class GuideRunner {
     this.changed();
     if (finished !== undefined) {
       this.verifySymbolLanding(finished);
+      // Persist what landed: symbol steps edit the buffer and nothing else
+      // saves it, so disk lags the session — resume derivation and any
+      // out-of-band read (build, forensics) see stale bytes until a manual
+      // Ctrl+S. The file walk already saves; match it.
+      void this.saveStepDoc(finished);
       this.flowInto(finished);
     }
+  }
+
+  private async saveStepDoc(index: number): Promise<void> {
+    const step = this.guide?.steps[index];
+    if (!step) return;
+    const rel = step.file.split(":")[0];
+    const doc = vscode.workspace.textDocuments.find((d) => d.uri.fsPath.endsWith(rel));
+    if (doc?.isDirty) await doc.save();
   }
 
   // Ground truth beats the session for symbol steps too: a walk completing
