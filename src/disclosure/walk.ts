@@ -95,9 +95,14 @@ export function findWalkStart(node: SyntaxNode, spec: LanguageSpec = RUST): Synt
 // (invariant 2), exactly like the no-walkable-node case.
 export function cleanWalkRegion(tail: string, spec: LanguageSpec = RUST): string | undefined {
   const root = parserFor(spec).parse(tail).rootNode as unknown as SyntaxNode;
-  if (root.hasError) return undefined;
   const start = findWalkStart(root, spec);
-  return start ? tail.slice(0, start.endIndex) : undefined;
+  // Scope the dirty-parse check to the WALKED NODE's subtree, not the whole
+  // tail: the tail runs to end-of-file, and one unparseable line anywhere
+  // below the region revoked every verdict — recovery then offered each node
+  // at the cursor and a tabbing human nested siblings doll-style. Garbage that
+  // error recovery absorbs INTO the region still fails (subtree hasError).
+  if (!start || start.hasError) return undefined;
+  return tail.slice(0, start.endIndex);
 }
 
 // The function named `name`, in pre-order — where a modify/delete step's symbol

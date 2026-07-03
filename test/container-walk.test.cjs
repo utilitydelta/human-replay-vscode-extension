@@ -171,9 +171,19 @@ test("cleanWalkRegion: a dirty parse yields no verdict, a clean one yields the r
   // makes error recovery absorb it into neighboring nodes and poisons every
   // container key — the walk must say \"no verdict\", never the wrong container.
   const poisoned = `public struct foobar(string hello);\n\npublic static class DiscountMath\n{\n    \n}\n`;
-  assert.strictEqual(cleanWalkRegion(poisoned, CSHARP), undefined, "erroring tail → undefined");
+  assert.strictEqual(cleanWalkRegion(poisoned, CSHARP), undefined, "garbage absorbed into the region → undefined");
 
   const clean = `public static class DiscountMath\n{\n    \n}\n`;
   const region = cleanWalkRegion(clean, CSHARP);
   assert.ok(region !== undefined && region.trimEnd().endsWith("}"), "clean tail → the walked node's region");
+});
+
+test("cleanWalkRegion: unparseable bytes BELOW the region don't revoke its verdict", () => {
+  // The tail runs to end-of-file; a foreign unparseable line after the walked
+  // node must not blind the eligibility check (the doll-nesting corruption).
+  const below = `public class DiscountRule\n{\n    public DiscountRule(string name)\n    {\n        Name = name;\n    }\n}\n\npublic struct foobar(int a);\n`;
+  const region = cleanWalkRegion(below, CSHARP);
+  assert.ok(region !== undefined, "region verdict survives garbage below it");
+  assert.ok(region.trimEnd().endsWith("}"), "region is the class");
+  assert.ok(!region.includes("foobar"), "the garbage is outside the region");
 });

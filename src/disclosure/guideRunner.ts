@@ -136,7 +136,36 @@ export class GuideRunner {
     const finished = this.pc.inFlightIndex;
     if (!this.pc.complete()) return;
     this.changed();
-    if (finished !== undefined) this.flowInto(finished);
+    if (finished !== undefined) {
+      this.verifySymbolLanding(finished);
+      this.flowInto(finished);
+    }
+  }
+
+  // Ground truth beats the session for symbol steps too: a walk completing
+  // proves gestures happened, not that the bytes match the sandbox (a recovery
+  // cascade once nested siblings doll-style and still read as done). A
+  // WARNING, not a block — Skip This Hunk and kept edits make honest,
+  // human-ratified divergence; a reload will read the step as pending either
+  // way, and re-running it offers the remaining delta as a diff.
+  private verifySymbolLanding(index: number): void {
+    const step = this.guide?.steps[index];
+    if (!step || (step.action !== "create" && step.action !== "modify")) return;
+    const rel = step.file.split(":")[0];
+    const spec = languageForFile(rel);
+    if (!spec) return;
+    const doc = vscode.workspace.textDocuments.find((d) => d.uri.fsPath.endsWith(rel));
+    if (!doc) return;
+    const after = step.after ?? this.readSandboxSymbol(step, spec);
+    if (after === undefined) return; // nothing to verify against — no verdict
+    const live = this.symbolFrom(doc.getText(), step.symbol, spec);
+    if (live === after) return;
+    this.output.appendLine(
+      `[guide] step ${step.id}: landed \`${step.symbol}\` ${live === undefined ? "is unresolvable in the target" : "differs from the sandbox"} — done this session, pending on reload`,
+    );
+    void vscode.window.showWarningMessage(
+      `Human Replay: step ${step.id} finished but \`${step.symbol}\` ${live === undefined ? "can't be found in the file — check the layout" : "differs from the sandbox (your kept edits, or drift)"}. Re-run the step to see the delta.`,
+    );
   }
 
   // The one flow policy after a step resolves (completed, landed, or skipped).

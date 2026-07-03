@@ -76,6 +76,7 @@ export class DisclosureController {
   private continuing = false; // Tab re-entrancy latch for the re-anchored continue
   private recoveryEligible = false; // mirror of the context key, for dedupe
   private hintedIneligible = false; // one hint per excursion out of the container
+  private hintedNoVerdict = false; // one hint per session when the region won't parse
 
   constructor(private readonly output: vscode.OutputChannel) {}
 
@@ -98,6 +99,7 @@ export class DisclosureController {
     // in the right container — start eligible and let the settle correct it.
     this.setRecoveryEligible(v);
     this.hintedIneligible = false;
+    this.hintedNoVerdict = false;
   }
 
   private setRecoveryEligible(v: boolean): void {
@@ -384,6 +386,16 @@ export class DisclosureController {
     const cursorRel = editor.document.offsetAt(editor.selection.active) - s.anchorOffset;
     const eligible =
       symbolText === undefined || innermostContainerKey(symbolText, cursorRel, s.spec) === step.parentKey;
+    if (symbolText === undefined && !this.hintedNoVerdict) {
+      // No verdict: ghosts land at the cursor unverified. Say so once — a
+      // tabbing human can't see that structure checks are off.
+      this.hintedNoVerdict = true;
+      void vscode.window.setStatusBarMessage(
+        "Human Replay: this region doesn't parse — ghosts land at your cursor unchecked; watch the nesting.",
+        8000,
+      );
+      this.output.appendLine("[disclosure] recovery without a verdict — region doesn't parse cleanly");
+    }
     this.setRecoveryEligible(eligible);
     if (!eligible) {
       if (!this.hintedIneligible) {
