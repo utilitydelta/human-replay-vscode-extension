@@ -216,11 +216,29 @@ export function computeSteps(src: string, spec: LanguageSpec = RUST): Step[] {
 
   // Raw emissions in pre-order: text and the cursor it is inserted at, in the
   // coordinates of the buffer as it exists at that moment. Built by splicing a
-  // real string so positions are exact.
-  const raw: { insert: string; insertPos: number; kind: Step["kind"]; parentKey: string; bareText: string }[] = [];
+  // real string so positions are exact. `col` is the node's own source column:
+  // bareText continuation lines are dedented by it, because recovery consumers
+  // (buildRecoveryGhost, appendEdit) re-indent from the cursor and a
+  // source-absolute column underneath doubles the indent.
+  const raw: { insert: string; insertPos: number; kind: Step["kind"]; parentKey: string; bareText: string; col: number }[] = [];
   let buffer = "";
   const splice = (pos: number, text: string) => {
     buffer = buffer.slice(0, pos) + text + buffer.slice(pos);
+  };
+  const colOf = (i: number): number => {
+    let c = 0;
+    for (let k = i - 1; k >= 0 && src[k] !== "\n"; k--) c++;
+    return c;
+  };
+  // Strip up to `col` leading spaces from every line but the first — the
+  // inverse of the re-indent the recovery path applies.
+  const dedent = (text: string, col: number): string => {
+    if (col === 0) return text;
+    const strip = new RegExp(`^ {0,${col}}`);
+    return text
+      .split("\n")
+      .map((l, i) => (i === 0 ? l : l.replace(strip, "")))
+      .join("\n");
   };
 
   // Emit `node`'s skeleton beginning at `pos`; `lead` is the source bytes
@@ -234,7 +252,7 @@ export function computeSteps(src: string, spec: LanguageSpec = RUST): Step[] {
       const bareText = src.slice(node.startIndex, node.endIndex);
       const text = lead + bareText;
       splice(pos, text);
-      raw.push({ insert: text, insertPos: pos, kind: "leaf", parentKey, bareText });
+      raw.push({ insert: text, insertPos: pos, kind: "leaf", parentKey, bareText, col: colOf(node.startIndex) });
       return pos + text.length;
     }
     const header = src.slice(d.node.startIndex, d.block.startIndex + 1); // ends with `{`
@@ -246,7 +264,7 @@ export function computeSteps(src: string, spec: LanguageSpec = RUST): Step[] {
       // Empty body: the shell IS the node — emit its interior verbatim.
       const body = lead + header + src.slice(d.block.startIndex + 1, d.block.endIndex);
       splice(pos, body);
-      raw.push({ insert: body, insertPos: pos, kind: "container", parentKey, bareText });
+      raw.push({ insert: body, insertPos: pos, kind: "container", parentKey, bareText, col: colOf(d.node.startIndex) });
       return pos + body.length;
     }
 
@@ -256,7 +274,7 @@ export function computeSteps(src: string, spec: LanguageSpec = RUST): Step[] {
     const close = src.slice(kids[kids.length - 1].endIndex, d.block.endIndex);
     const body = lead + header + preFirst + close;
     splice(pos, body);
-    raw.push({ insert: body, insertPos: pos, kind: "container", parentKey, bareText });
+    raw.push({ insert: body, insertPos: pos, kind: "container", parentKey, bareText, col: colOf(d.node.startIndex) });
 
     // This container's own key, for its children to re-anchor against.
     const childKey = src.slice(d.node.startIndex, d.block.startIndex).trim();
@@ -272,12 +290,13 @@ export function computeSteps(src: string, spec: LanguageSpec = RUST): Step[] {
   // cursorOffset of step i = insertPos of step i+1 (the next insertion point);
   // last step's cursor lands at the end of its own insert. The first step's
   // recovery bareText carries the prefix: doc comments and attributes are the
-  // symbol's bytes, and a recovery-landed first step must not drop them.
+  // symbol's bytes, and a recovery-landed first step must not drop them (the
+  // prefix shares the walk-start node's column, so one dedent covers both).
   return raw.map((r, i) => ({
     insert: r.insert,
     kind: r.kind,
     parentKey: r.parentKey,
-    bareText: i === 0 ? prefix + r.bareText : r.bareText,
+    bareText: dedent(i === 0 ? prefix + r.bareText : r.bareText, r.col),
     insertOffset: r.insertPos,
     cursorOffset: i + 1 < raw.length ? raw[i + 1].insertPos : r.insertPos + r.insert.length,
   }));

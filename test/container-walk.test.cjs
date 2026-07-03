@@ -21,6 +21,8 @@ const bundle = path.join(__dirname, ".container-walk.bundle.cjs");
 fs.writeFileSync(
   path.join(__dirname, ".container-walk.entry.ts"),
   `export { computeSteps, walkableSource, cleanWalkRegion } from "../src/disclosure/walk";\n` +
+    `export { appendEdit, applyAppend } from "../src/disclosure/anchoredInsert";\n` +
+    `export { buildRecoveryGhost } from "../src/disclosure/recoveryGhost";\n` +
     `export { RUST, CSHARP, TYPESCRIPT, PYTHON } from "../src/disclosure/language";\n`,
 );
 esbuild.buildSync({
@@ -31,7 +33,7 @@ esbuild.buildSync({
   platform: "node",
   external: EXTERNALS,
 });
-const { computeSteps, walkableSource, cleanWalkRegion, RUST, CSHARP, TYPESCRIPT, PYTHON } = require(bundle);
+const { computeSteps, walkableSource, cleanWalkRegion, appendEdit, applyAppend, buildRecoveryGhost, RUST, CSHARP, TYPESCRIPT, PYTHON } = require(bundle);
 test.after(() => {
   fs.rmSync(bundle, { force: true });
   fs.rmSync(path.join(__dirname, ".container-walk.entry.ts"), { force: true });
@@ -102,6 +104,56 @@ test("a container walk opens shape-first: the shell precedes its members", () =>
 test("no-create-walk languages stay non-walkable", () => {
   const py = `class Store:\n    def add(self, x):\n        self.x = x\n`;
   assert.strictEqual(walkableSource(py, PYTHON), false, "python has no create walk");
+});
+
+// The recovery path's end-to-end oracle — the twin of walkableSource's
+// happy-path simulation. Rebuild the whole symbol the way divergence recovery
+// does (first step via the cursor ghost, every later step via the re-anchored
+// parent append) and demand byte equality with the source. This is the seam
+// the missing-brace and doubled-indent corruptions lived in; neither survives
+// a byte-exact rebuild. Corpus layout uses appendEdit's join (single newline
+// between siblings, 4-column indent) so equality is exact.
+const RECOVERY_CORPUS = [
+  {
+    name: "csharp: class with two methods (brace on its own line)",
+    spec: () => CSHARP,
+    code: `public static class DiscountMath\n{\n    public static decimal RoundToCents(decimal amount)\n    {\n        return Math.Round(amount, 2);\n    }\n    public static decimal Clamp(decimal amount)\n    {\n        return Math.Max(amount, 0m);\n    }\n}`,
+  },
+  {
+    name: "rust: fn with a nested loop",
+    spec: () => RUST,
+    code: `fn sum(xs: &[i32]) -> i32 {\n    let mut total = 0;\n    for x in xs {\n        total += x;\n    }\n    total\n}`,
+  },
+  {
+    name: "rust: impl with a method",
+    spec: () => RUST,
+    code: `impl Reading {\n    pub fn new(room: &'static str) -> Self {\n        Reading { room }\n    }\n}`,
+  },
+];
+
+test("recovery assembly rebuilds the symbol byte-exact", () => {
+  for (const c of RECOVERY_CORPUS) {
+    const spec = c.spec();
+    const steps = computeSteps(c.code, spec);
+    // Step 0 lands via the cursor ghost on an empty line at column 0.
+    let buf = buildRecoveryGhost("", 0, steps[0]).text;
+    for (const step of steps.slice(1)) {
+      const edit = appendEdit(buf, step.parentKey, step.bareText, spec);
+      assert.ok(edit, `${c.name}: appendEdit resolved for ${JSON.stringify(step.bareText.split("\n")[0])}`);
+      buf = applyAppend(buf, edit);
+    }
+    assert.strictEqual(buf, c.code, `${c.name}: recovery-built bytes must equal the source`);
+  }
+});
+
+test("bareText is column-relative: nested continuation lines carry no source pad", () => {
+  const steps = computeSteps(RECOVERY_CORPUS[0].code, CSHARP);
+  const method = steps.find((s) => s.bareText.startsWith("public static decimal RoundToCents"));
+  assert.strictEqual(
+    method.bareText,
+    "public static decimal RoundToCents(decimal amount)\n{\n}",
+    "the brace line is dedented to the node's own column",
+  );
 });
 
 test("recovery bareText: the first step carries its leading trivia", () => {
