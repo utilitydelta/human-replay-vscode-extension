@@ -481,13 +481,23 @@ export class GuideRunner {
     if (!ws) return;
     const targetUri = vscode.Uri.joinPath(ws.uri, rel);
     // Read the OPEN buffer first: mid-walk the file is dirty, and disk is stale
-    // until the walk's final save.
+    // until the walk's final save. But an editor tab can outlive its file (the
+    // human deleted it on disk) — those bytes are a ghost, not ground truth,
+    // and marked a deleted file's step done while the next step failed on the
+    // missing file. No disk file → fresh create, whatever zombie tabs hold.
     const open = vscode.workspace.textDocuments.find((d) => d.uri.toString() === targetUri.toString());
     let existing = open?.getText();
     if (existing === undefined) {
       try {
         existing = Buffer.from(await vscode.workspace.fs.readFile(targetUri)).toString("utf8");
       } catch {
+        existing = undefined;
+      }
+    } else {
+      try {
+        await vscode.workspace.fs.stat(targetUri);
+      } catch {
+        this.output.appendLine(`[guide] step ${step.id}: ${rel} is open in an editor but gone from disk — treating as a fresh create`);
         existing = undefined;
       }
     }
