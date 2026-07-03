@@ -372,11 +372,15 @@ const BY_EXTENSION: Record<string, LanguageSpec> = {
 };
 
 /** The language a file replays as, by extension — undefined when unsupported
- *  (the caller surfaces it; nothing assumes a default for real files). */
+ *  (the caller surfaces it; nothing assumes a default for real files). Accepts
+ *  the guide's `path:line` form: a step's File field carries an optional line
+ *  for the human's ctrl-click, and a raw pass-through turned `.cs:19` into an
+ *  unknown extension. */
 export function languageForFile(filePath: string): LanguageSpec | undefined {
-  const dot = filePath.lastIndexOf(".");
+  const bare = filePath.split(":")[0];
+  const dot = bare.lastIndexOf(".");
   if (dot < 0) return undefined;
-  return BY_EXTENSION[filePath.slice(dot).toLowerCase()];
+  return BY_EXTENSION[bare.slice(dot).toLowerCase()];
 }
 
 // One parser per language, reused — parser construction is the expensive part.

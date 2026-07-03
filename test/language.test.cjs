@@ -212,6 +212,10 @@ test("languageForFile: extension routing, unknown fails closed", () => {
   assert.strictEqual(languageForFile("styles/site.css").id, "css");
   assert.strictEqual(languageForFile("styles/site.scss"), undefined); // scss is a different grammar — fails closed
   assert.strictEqual(languageForFile("setup.sh"), undefined);
+  // The guide's File field carries an optional :line for the human's
+  // ctrl-click — the lookup must see the bare path (`.cs:19` broke step 2.1).
+  assert.strictEqual(languageForFile("Cart.cs:19").id, "csharp");
+  assert.strictEqual(languageForFile("src/App.tsx:4").id, "tsx");
   assert.strictEqual(languageForFile("Makefile"), undefined);
 });
 
