@@ -64,8 +64,8 @@ export class HumanReplayCompletionProvider
       new vscode.Range(new vscode.Position(0, 0), position),
     );
     const notes = this.comments.notesFor(document.uri);
-    const token = noteToken(document.languageId);
-    const fullPrefix = weaveNotes(rawPrefix, notes, token.open, token.close);
+    const noteMark = noteToken(document.languageId);
+    const fullPrefix = weaveNotes(rawPrefix, notes, noteMark.open, noteMark.close);
     const lastLine = document.lineCount - 1;
     const fullSuffix = document.getText(
       new vscode.Range(
