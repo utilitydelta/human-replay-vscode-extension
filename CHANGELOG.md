@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1
+
+Docs-only release: rewrote the README so the Marketplace listing carries it.
+
 ## 0.2.0
 
 The manual-testing release: full replays of a multi-phase C# guide drove
