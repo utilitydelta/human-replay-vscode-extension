@@ -151,15 +151,14 @@ export class DiffReplayController {
     return asInsertion(step.oldText, step.replacement) ? "insert" : "block";
   }
 
-  // Which steps ride the decoration accept (Tab → acceptDecoration): every
-  // patch hunk and every replace/delete/block — those need the strike, and the
-  // decoration surface is ours and never fails to render. Non-patch INSERTS
-  // (whole-block create segments) keep the native ghost: it is the only
-  // surface that can preview a multi-line body in full, and the provider now
-  // logs every serve/decline so a dropped arm names itself instead of
-  // reading as a dead Tab.
-  private ridesDecoration(s: Session, step: ReplayStep): boolean {
-    if (s.lineMode) return true;
+  // Which surface a step rides, split by SHAPE: anything that deletes or
+  // replaces existing bytes needs the strike, and the decoration surface is
+  // ours and never fails to render. Pure INSERTS — block create segments and
+  // a patch's addition hunks alike — keep the native ghost: it is the only
+  // surface that previews a multi-line body in full, and the provider logs
+  // every serve/decline so a dropped arm names itself instead of reading as
+  // a dead Tab.
+  private ridesDecoration(_s: Session, step: ReplayStep): boolean {
     return this.surfaceOf(step) !== "insert";
   }
 
@@ -559,6 +558,9 @@ export class DiffReplayController {
       },
     ]);
     void vscode.commands.executeCommand("setContext", DECORATION_CONTEXT, true);
+    this.output.appendLine(
+      `[diff-replay] step ${this.session!.index + 1}/${this.session!.steps.length} armed: decoration at line ${range.start.line + 1}`,
+    );
     if (reposition) {
       editor.selection = new vscode.Selection(range.start, range.start);
       revealCursor(editor, range.start);
