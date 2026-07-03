@@ -24,9 +24,13 @@ and the diff.
 2. Pick the sandbox to replay from. `humanReplay.sandboxParent` sets where
    sandboxes live (defaults to `~/sandbox`); `humanReplay.guidePath` points at a
    guide directly (defaults to the workspace's `replay-guides/` folder).
-3. Tab lands each step. Escape cancels. The Replay Guide view in the explorer
-   shows progress, and every engine decision is logged in the "Human Replay"
-   output channel.
+3. Tab lands each step. Shift+Escape skips one hunk (your bytes stay); Escape
+   cancels the current step. The replay pauses at each phase boundary — the
+   status bar and the Replay Guide view carry the continue.
+4. The Replay Guide view in the explorer shows progress and re-runs any step;
+   every engine decision is logged in the "Human Replay" output channel. After
+   a rollback, **Resync Steps from Files** re-reads every step's status from
+   disk.
 
 ## Languages
 
@@ -40,13 +44,16 @@ selector or condition text.
 Two features, both off by default, call a local Ollama instance. Nothing else
 does; replay itself never calls a model.
 
-- **FIM autocomplete**: inline completions from a local base model
-  (`humanReplay.model`, e.g. `qwen2.5-coder:1.5b-base`).
+- **FIM autocomplete**: inline completions from a local base model. Replay
+  notes near the cursor are woven into the prompt, so a note like "filter out
+  anything over 100 dollars" steers the suggestion.
 - **Comments to prompt**: collates your replay notes into a prompt for the next
   sandbox session using a local instruct model (`humanReplay.promptModel`).
 
-The extension never starts Ollama for you. If it is unreachable, autocomplete
-turns itself off until it returns.
+Turning autocomplete on walks the setup for you: one click starts the model
+server, one picks a model size (Fast/Smart), one downloads it — on any OS.
+Nothing model-shaped ever happens without a click; if the server goes away,
+a status-bar indicator brings it back.
 
 ## License
 

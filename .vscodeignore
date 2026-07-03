@@ -1,10 +1,13 @@
 .vscode/**
 .vscode-test/**
 .claude/**
+.github/**
 src/**
 test/**
 scripts/**
 replay-guides/**
+docs/**
+feedback.md
 esbuild.js
 tsconfig.json
 CLAUDE.md
@@ -13,6 +16,7 @@ package-lock.json
 **/.index.md
 **/*.map
 **/*.ts
+**/*.vsix
 
 # The dist bundle externalizes the native tree-sitter packages, so vsce ships
 # production node_modules in the vsix. NAPI prebuilds make the C/C++ sources,

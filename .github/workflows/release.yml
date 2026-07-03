@@ -1,0 +1,96 @@
+# Ship on tag: push v0.2.0 → one platform-specific .vsix per OS/arch, a GitHub
+# Release carrying them all, and a Marketplace publish when VSCE_PAT is set.
+#
+# Platform-specific because the extension externalizes NATIVE tree-sitter
+# grammars: the vsix ships production node_modules with NAPI prebuilds, so
+# each package must be built on its own platform (vsce --target).
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+          - os: windows-latest
+            target: win32-x64
+          - os: macos-13
+            target: darwin-x64
+          - os: macos-latest
+            target: darwin-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Tag matches package.json version
+        shell: bash
+        run: |
+          PKG="v$(node -p "require('./package.json').version")"
+          TAG="${GITHUB_REF_NAME}"
+          if [ "$PKG" != "$TAG" ]; then
+            echo "tag $TAG does not match package.json $PKG" >&2
+            exit 1
+          fi
+
+      # npm ci compiles the native grammars for THIS platform — that is the
+      # point of the matrix.
+      - run: npm ci
+
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+      - name: Package
+        shell: bash
+        run: npx @vscode/vsce package --target ${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix-${{ matrix.target }}
+          path: "*.vsix"
+          if-no-files-found: error
+
+  release:
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: vsix
+          merge-multiple: true
+
+      - name: GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: vsix/*.vsix
+          body: "See CHANGELOG.md for this release's changes."
+
+      # Marketplace publish is opt-in: add a VSCE_PAT repo secret (a Personal
+      # Access Token for the 'utilitydelta' publisher) and this step publishes
+      # every platform package; without it the step skips and the GitHub
+      # Release is the ship.
+      - name: Publish to Marketplace
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          if [ -z "$VSCE_PAT" ]; then
+            echo "VSCE_PAT not set — skipping Marketplace publish (GitHub Release only)"
+            exit 0
+          fi
+          for f in vsix/*.vsix; do
+            npx @vscode/vsce publish --packagePath "$f" -p "$VSCE_PAT"
+          done

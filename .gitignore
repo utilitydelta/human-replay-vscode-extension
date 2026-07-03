@@ -3,3 +3,4 @@ dist/
 *.vsix
 .vscode-test/
 **/*.bundle.cjs
+*.vsix
