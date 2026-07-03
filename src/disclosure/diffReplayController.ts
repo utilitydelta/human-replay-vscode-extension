@@ -151,15 +151,17 @@ export class DiffReplayController {
     return asInsertion(step.oldText, step.replacement) ? "insert" : "block";
   }
 
-  // Which surface a step rides, split by SHAPE: anything that deletes or
-  // replaces existing bytes needs the strike, and the decoration surface is
-  // ours and never fails to render. Pure INSERTS — block create segments and
-  // a patch's addition hunks alike — keep the native ghost: it is the only
-  // surface that previews a multi-line body in full, and the provider logs
-  // every serve/decline so a dropped arm names itself instead of reading as
-  // a dead Tab.
-  private ridesDecoration(_s: Session, step: ReplayStep): boolean {
-    return this.surfaceOf(step) !== "insert";
+  // Every diff-replay step rides the decoration surface. This is now
+  // EVIDENCE, not hypothesis: with the provider instrumented, an insert hunk
+  // served the item three consecutive arms ("provider served the insert
+  // ghost") and VS Code rendered none of them — in the same session where
+  // five sibling inserts rendered fine. The native surface draws served items
+  // at its own discretion; ours never fails. The preview cost (first line +
+  // count instead of the full body) is the pending-bytes work item in
+  // docs/pending-work.md. The disclosure walk keeps native ghosts — its
+  // cursor-gated arms have never dropped.
+  private ridesDecoration(_s: Session, _step: ReplayStep): boolean {
+    return true;
   }
 
   // Resolve the current step's live document range by re-anchoring against the
