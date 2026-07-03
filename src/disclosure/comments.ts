@@ -100,6 +100,13 @@ export class CommentLayer {
     return this.collated.map((c) => ({ line: this.currentLine(c), text: c.text }));
   }
 
+  /** This document's notes, re-anchored, 0-based — the FIM weave's input. */
+  notesFor(uri: vscode.Uri): { line0: number; text: string }[] {
+    return this.collated
+      .filter((c) => c.uri.toString() === uri.toString())
+      .map((c) => ({ line0: this.currentLine(c) - 1, text: c.text }));
+  }
+
   get count(): number {
     return this.collated.length;
   }

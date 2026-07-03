@@ -30,7 +30,11 @@ export function activate(context: vscode.ExtensionContext) {
   const diffReplay = new DiffReplayController(output);
   const orchestrator = new ReplayOrchestrator(output, disclosure, diffReplay);
   const guideRunner = new GuideRunner(output, disclosure, orchestrator);
-  const provider = new HumanReplayCompletionProvider(output, disclosure, diffReplay);
+  // The comment layer feeds two consumers: the sandbox prompt generator, and
+  // the FIM prompt weave (a note steers the local completion at the caret).
+  const comments = new CommentLayer(output);
+  context.subscriptions.push(comments);
+  const provider = new HumanReplayCompletionProvider(output, disclosure, diffReplay, comments);
   context.subscriptions.push(
     vscode.languages.registerInlineCompletionItemProvider(
       { pattern: "**" },
@@ -99,8 +103,6 @@ export function activate(context: vscode.ExtensionContext) {
   // one of three exits. "Pull into prompt" runs the S10 template through the local
   // instruct model — pre-gated (no comments → no call) with the human reading the
   // generated prompt before anything sends (invariant 2; S10 proved both mandatory).
-  const comments = new CommentLayer(output);
-  context.subscriptions.push(comments);
   // Keep note bubbles on the code they were about as the replay shifts the buffer.
   // Cheap: only re-parses while notes are actually collated.
   context.subscriptions.push(

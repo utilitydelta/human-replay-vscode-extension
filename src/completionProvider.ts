@@ -6,6 +6,8 @@ import { offerModelPull, startOllamaTerminal } from "./modelPull";
 import { postprocess } from "./postprocess";
 import { DisclosureController } from "./disclosure/controller";
 import { DiffReplayController } from "./disclosure/diffReplayController";
+import { CommentLayer } from "./disclosure/comments";
+import { noteToken, weaveNotes } from "./noteWeave";
 
 /**
  * Turns a cursor position into a FIM request and returns ghost-text. The human
@@ -30,6 +32,7 @@ export class HumanReplayCompletionProvider
     private readonly output: vscode.OutputChannel,
     private readonly disclosure: DisclosureController,
     private readonly diffReplay: DiffReplayController,
+    private readonly comments: CommentLayer,
   ) {}
 
   async provideInlineCompletionItems(
@@ -53,9 +56,16 @@ export class HumanReplayCompletionProvider
       return undefined;
     }
 
-    const fullPrefix = document.getText(
+    // Replay notes are bubbles, not bytes — weave them into the prompt as
+    // comment lines above their anchors so a note like "filter out anything
+    // over 100 dollars" actually steers the completion. Prompt-only: the
+    // buffer never changes, and the ghost is still the human's to Tab.
+    const rawPrefix = document.getText(
       new vscode.Range(new vscode.Position(0, 0), position),
     );
+    const notes = this.comments.notesFor(document.uri);
+    const token = noteToken(document.languageId);
+    const fullPrefix = weaveNotes(rawPrefix, notes, token.open, token.close);
     const lastLine = document.lineCount - 1;
     const fullSuffix = document.getText(
       new vscode.Range(
