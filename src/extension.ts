@@ -40,6 +40,10 @@ export function activate(context: vscode.ExtensionContext) {
   const comments = new CommentLayer(output);
   context.subscriptions.push(comments);
   const provider = new HumanReplayCompletionProvider(output, disclosure, diffReplay, comments);
+  context.subscriptions.push(provider);
+  context.subscriptions.push(
+    vscode.commands.registerCommand("humanReplay.reviveAutocomplete", () => void provider.revive(readConfig().apiBase)),
+  );
   context.subscriptions.push(
     vscode.languages.registerInlineCompletionItemProvider(
       { pattern: "**" },

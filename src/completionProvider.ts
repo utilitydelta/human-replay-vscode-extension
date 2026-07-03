@@ -27,13 +27,37 @@ export class HumanReplayCompletionProvider
   // One actionable warning per missing model, not one per keystroke. Keyed by
   // model name so pointing humanReplay.model somewhere new re-checks.
   private warnedMissingModel: string | undefined;
+  // The offline state is AMBIENT: a background query failing is not the
+  // human's gesture, so it gets a status-bar indicator (click to start the
+  // server), never a toast — those interrupted every phase completion, the
+  // first moment the replay releases the suggest surface back to FIM.
+  private readonly offlineStatus: vscode.StatusBarItem;
 
   constructor(
     private readonly output: vscode.OutputChannel,
     private readonly disclosure: DisclosureController,
     private readonly diffReplay: DiffReplayController,
     private readonly comments: CommentLayer,
-  ) {}
+  ) {
+    this.offlineStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 50);
+    this.offlineStatus.text = "$(plug) autocomplete offline";
+    this.offlineStatus.tooltip = "Local autocomplete's model server isn't running — click to start it";
+    this.offlineStatus.command = "humanReplay.reviveAutocomplete";
+  }
+
+  dispose(): void {
+    this.offlineStatus.dispose();
+  }
+
+  /** The status item's click: start the server, report, and clear the state. */
+  async revive(apiBase: string): Promise<void> {
+    const models = await startServerAndWait(apiBase, this.output);
+    if (models !== undefined) {
+      this.offline = false;
+      this.offlineStatus.hide();
+      void vscode.window.showInformationMessage("Human Replay: local autocomplete is ready — keep typing.");
+    }
+  }
 
   async provideInlineCompletionItems(
     document: vscode.TextDocument,
@@ -130,6 +154,7 @@ export class HumanReplayCompletionProvider
       if (this.offline) {
         this.output.appendLine("[human-replay] model reachable again");
         this.offline = false;
+        this.offlineStatus.hide();
       }
       this.warnedMissingModel = undefined;
 
@@ -150,26 +175,13 @@ export class HumanReplayCompletionProvider
       // once, not on every keystroke, and stay quiet until it comes back.
       const offline = /fetch failed|ECONNREFUSED|ENOTFOUND|EAI_AGAIN/i.test(String(err));
       if (offline) {
-        // Once per outage, in the persona's language, with the one-click fix.
-        // Autocomplete is ON (they typed with it enabled) — silence here reads
-        // as "broken", not "opt-in".
         if (!this.offline) {
           this.offline = true;
           this.output.appendLine(
             "[human-replay] model server unreachable — autocomplete idle until it returns " +
               "(disclosure is unaffected; it never uses the model)",
           );
-          void vscode.window
-            .showWarningMessage("Human Replay: local autocomplete needs its model server, which isn't running.", "Start it")
-            .then(async (choice) => {
-              if (choice !== "Start it") return;
-              // FIM only fires on typing — once the server answers, say so, or
-              // the human sits waiting for a ghost that needs a keystroke.
-              const models = await startServerAndWait(cfg.apiBase, this.output);
-              if (models !== undefined) {
-                void vscode.window.showInformationMessage("Human Replay: local autocomplete is ready — keep typing.");
-              }
-            });
+          this.offlineStatus.show();
         }
         return undefined;
       }
