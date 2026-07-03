@@ -368,6 +368,10 @@ export function activate(context: vscode.ExtensionContext) {
     const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     const derived = root ? guideRunner.deriveLanded(root) : 0;
     updateGuideStatus();
+    // The tree is the replay's control surface — show it the moment a guide
+    // loads, or the human never learns it exists. The first step's editor
+    // takes keyboard focus right after; the panel stays visible beside it.
+    void vscode.commands.executeCommand("humanReplay.guideSteps.focus");
     const done = guide.steps.length - guideRunner.steps.filter((_, i) => guideRunner.status(i) === "pending" || guideRunner.status(i) === "current").length;
     vscode.window.showInformationMessage(
       done > 0
