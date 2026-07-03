@@ -23,7 +23,11 @@ export interface WovenNote {
 export function weaveNotes(prefix: string, notes: WovenNote[], open: string, close?: string): string {
   if (notes.length === 0) return prefix;
   const lines = prefix.split("\n");
-  const inRange = notes.filter((n) => n.line0 >= 0 && n.line0 < lines.length);
+  // A note whose text already sits in the buffer (the human typed the comment
+  // themselves, or a replay landed it) must not weave again: a duplicated
+  // instruction teaches the model "comment, code, comment, code" and it echoes
+  // the comment instead of following it — observed live.
+  const inRange = notes.filter((n) => n.line0 >= 0 && n.line0 < lines.length && !prefix.includes(n.text));
   // Descending order keeps earlier indices valid as lines are spliced in.
   for (const n of [...inRange].sort((a, b) => b.line0 - a.line0)) {
     let at = n.line0;

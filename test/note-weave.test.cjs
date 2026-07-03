@@ -61,6 +61,14 @@ test("notes below the cursor are dropped; no notes passes through byte-exact", (
   assert.strictEqual(weaveNotes(PREFIX, [], "//"), PREFIX);
 });
 
+test("a note the human already typed into the buffer does not weave twice", () => {
+  // Duplicated instructions teach the model comment-code alternation and it
+  // echoes the comment (with drift) instead of following it — observed live.
+  const typed = PREFIX + "\n    // filter out anything over 100 dollars";
+  const woven = weaveNotes(typed, [{ line0: 2, text: "filter out anything over 100 dollars" }], "//");
+  assert.strictEqual(woven, typed, "already-typed note passes through byte-exact");
+});
+
 test("comment tokens follow the language, wrapped pairs included", () => {
   assert.strictEqual(weaveNotes("x = 1", [{ line0: 0, text: "n" }], ...(() => { const t = noteToken("python"); return [t.open, t.close]; })()).split("\n")[0], "# n");
   const css = noteToken("css");
