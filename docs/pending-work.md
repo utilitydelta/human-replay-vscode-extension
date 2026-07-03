@@ -40,3 +40,16 @@ fix missing type knowledge. When funded: weave the definitions of symbols
 referenced near the caret (tree-sitter already resolves them per language)
 into the prompt the same way replay notes weave in — prompt-only, no buffer
 bytes, capped by prefixChars.
+
+## Marketplace publish: migrate off the PAT before 2026-12-01
+
+Azure DevOps global PATs retire on December 1, 2026 — the release workflow's
+VSCE_PAT stops working then. The documented replacement (Entra ID workload
+identity federation) is written for Azure Pipelines only: a user-assigned
+managed identity (requires an Azure subscription), added to the Marketplace
+publisher as Contributor, consumed via `vsce publish --azure-credential`.
+For GitHub Actions the undocumented-but-workable shape is: federated
+credential on the identity for this repo (environment-scoped subject),
+`azure/login` with `id-token: write`, then `--azure-credential`. Migrate the
+publish job before the deadline; the GitHub Release half of the workflow is
+unaffected either way.
