@@ -76,7 +76,7 @@
       },
       {
         "command": "humanReplay.runNextStep",
-        "title": "Run Next Step",
+        "title": "Continue Replay (Next Step or Phase)",
         "category": "Human Replay"
       },
       {

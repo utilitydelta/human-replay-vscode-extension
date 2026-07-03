@@ -232,6 +232,18 @@ export function activate(context: vscode.ExtensionContext) {
     const total = guideRunner.steps.length;
     const done = guideRunner.isComplete;
     const at = Math.min(guideRunner.counter + 1, total);
+    // A phase pause must be impossible to miss AFTER the toast is gone: the
+    // status bar goes prominent and stays that way until the human continues.
+    const paused = guideRunner.pausedPhase;
+    if (paused && !done) {
+      const short = paused.split(":")[0].trim();
+      guideStatus.text = `$(debug-continue) ${short} ready — click to continue`;
+      guideStatus.tooltip = `The replay is paused between phases. Click here (or a step in the Replay Guide panel) to start ${paused}.`;
+      guideStatus.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
+      guideStatus.show();
+      return;
+    }
+    guideStatus.backgroundColor = undefined;
     guideStatus.text = done
       ? `$(check) Replay: ${guideRunner.feature} ${total}/${total}`
       : `$(debug-step-over) Replay: ${guideRunner.feature} ${at}/${total}`;

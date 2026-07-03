@@ -39,6 +39,10 @@ export class GuideRunner {
   // humanReplay.sandboxRoot config is the fallback so a hand-configured run
   // still works.
   private sessionSandboxRoot: string | undefined;
+  // Set while the replay waits at a phase boundary — the next phase's title.
+  // The status bar renders it as a persistent "click to continue" so the pause
+  // survives the toast (which auto-dismisses while the human reviews).
+  private pausedBefore: string | undefined;
   // A create-file step's walk in flight: the segment plan and the position in
   // it. Each segment is one engine run (walk or block ghost); completeCurrent
   // chains the next until the plan is spent, then the step itself completes.
@@ -214,6 +218,13 @@ export class GuideRunner {
     if (from && to && from.phase !== to.phase) {
       const done = from.phase ?? "steps";
       this.output.appendLine(`[guide] ${done} complete — paused before ${to.phase ?? "the next steps"}`);
+      // The pause needs surfaces that OUTLIVE a toast: the status bar flips to
+      // a persistent "click to continue" (via pausedPhase + changed), and the
+      // Replay Guide panel reveals itself — it is the control surface for the
+      // stop. The toast stays as the immediate narration.
+      this.pausedBefore = to.phase ?? "the next steps";
+      this.changed();
+      void vscode.commands.executeCommand("humanReplay.guideSteps.focus");
       void vscode.window
         .showInformationMessage(`Human Replay: ${done} complete. Review what landed, then continue when ready.`, "Continue replay")
         .then((choice) => {
@@ -248,12 +259,18 @@ export class GuideRunner {
     return this.pc.isComplete;
   }
 
+  /** The next phase's title while the replay waits at a phase boundary. */
+  get pausedPhase(): string | undefined {
+    return this.pausedBefore;
+  }
+
   /** End the replay session: unload the guide, drop the sandbox pin, reset the
    *  counter. The panel and status bar key off `loaded`, so they retire with
    *  it. Done/skipped marks live in workspaceState and re-derive from bytes on
    *  the next load — ending a session never loses position. */
   unload(): void {
     this.fileWalk = undefined;
+    this.pausedBefore = undefined;
     this.guide = undefined;
     this.sessionSandboxRoot = undefined;
     this.pc.reset(0);
@@ -741,6 +758,10 @@ export class GuideRunner {
     if (!step) {
       vscode.window.showWarningMessage("Human Replay: no such step in the loaded guide.");
       return;
+    }
+    if (this.pausedBefore !== undefined) {
+      this.pausedBefore = undefined; // any run is the continue gesture
+      this.changed();
     }
     // A manual run while a step is mid-flight replaces it — tear the live
     // engines down first so two walks never fight over one buffer. Clicking the
