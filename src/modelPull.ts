@@ -59,22 +59,30 @@ export async function ensureAutocompleteReady(apiBase: string, model: string, ou
       "Start it",
     );
     if (choice !== "Start it") return;
-    startOllamaTerminal(output);
-    models = await waitForServer(apiBase, 15_000);
-    if (models === undefined) {
-      vscode.window.showWarningMessage("Human Replay: the model server didn't come up — check the Ollama terminal for what went wrong.");
-      return;
-    }
+    models = await startServerAndWait(apiBase, output);
+    if (models === undefined) return;
   }
-  if (!has(models, model)) {
-    const chosen = await chooseModel(model);
-    if (chosen === undefined) return;
-    if (!has(models, chosen)) {
-      await offerModelPull(apiBase, chosen, output, "local autocomplete needs its model — a one-time download");
-      return;
-    }
+  // The choice is about the HUMAN having chosen, not about disk state: an
+  // untouched default always asks (once — the pick persists to settings),
+  // even when the default model happens to be installed already.
+  const chosen = await chooseModel(model);
+  if (chosen === undefined) return;
+  if (!has(models, chosen)) {
+    await offerModelPull(apiBase, chosen, output, "local autocomplete needs its model — a one-time download");
+    return;
   }
-  void vscode.window.setStatusBarMessage("Human Replay: local autocomplete is ready", 3000);
+  void vscode.window.showInformationMessage("Human Replay: local autocomplete is ready — start typing.");
+}
+
+/** Start the server in its terminal and wait for it to answer. Returns the
+ *  model list once up; says what happened either way. */
+export async function startServerAndWait(apiBase: string, output: vscode.OutputChannel): Promise<string[] | undefined> {
+  startOllamaTerminal(output);
+  const models = await waitForServer(apiBase, 15_000);
+  if (models === undefined) {
+    vscode.window.showWarningMessage("Human Replay: the model server didn't come up — check the Ollama terminal for what went wrong.");
+  }
+  return models;
 }
 
 // Poll until the just-started server answers, or the timeout passes. Startup

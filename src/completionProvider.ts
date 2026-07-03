@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import { readConfig } from "./config";
 import { resolveTemplate } from "./templates";
 import { generateFim } from "./ollama";
-import { offerModelPull, startOllamaTerminal } from "./modelPull";
+import { offerModelPull, startServerAndWait } from "./modelPull";
 import { postprocess } from "./postprocess";
 import { DisclosureController } from "./disclosure/controller";
 import { DiffReplayController } from "./disclosure/diffReplayController";
@@ -161,8 +161,14 @@ export class HumanReplayCompletionProvider
           );
           void vscode.window
             .showWarningMessage("Human Replay: local autocomplete needs its model server, which isn't running.", "Start it")
-            .then((choice) => {
-              if (choice === "Start it") startOllamaTerminal(this.output);
+            .then(async (choice) => {
+              if (choice !== "Start it") return;
+              // FIM only fires on typing — once the server answers, say so, or
+              // the human sits waiting for a ghost that needs a keystroke.
+              const models = await startServerAndWait(cfg.apiBase, this.output);
+              if (models !== undefined) {
+                void vscode.window.showInformationMessage("Human Replay: local autocomplete is ready — keep typing.");
+              }
             });
         }
         return undefined;
