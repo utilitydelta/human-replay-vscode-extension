@@ -151,15 +151,16 @@ export class DiffReplayController {
     return asInsertion(step.oldText, step.replacement) ? "insert" : "block";
   }
 
-  // Every diff-replay step rides the decoration accept (Tab → acceptDecoration).
-  // The native inline surface dropped programmatically-armed ghosts three
-  // separate times (a create-file segment, a patch hunk, a block insert):
-  // armed, caret positioned, nothing rendered, Tab dead — and re-triggering is
-  // equally ignorable. The decoration surface is ours and has never failed to
-  // render. The disclosure walk keeps native ghosts — its human-paced,
-  // cursor-gated arms render reliably.
-  private ridesDecoration(_s: Session, _step: ReplayStep): boolean {
-    return true;
+  // Which steps ride the decoration accept (Tab → acceptDecoration): every
+  // patch hunk and every replace/delete/block — those need the strike, and the
+  // decoration surface is ours and never fails to render. Non-patch INSERTS
+  // (whole-block create segments) keep the native ghost: it is the only
+  // surface that can preview a multi-line body in full, and the provider now
+  // logs every serve/decline so a dropped arm names itself instead of
+  // reading as a dead Tab.
+  private ridesDecoration(s: Session, step: ReplayStep): boolean {
+    if (s.lineMode) return true;
+    return this.surfaceOf(step) !== "insert";
   }
 
   // Resolve the current step's live document range by re-anchoring against the
@@ -217,15 +218,23 @@ export class DiffReplayController {
     const s = this.session;
     const step = s?.steps[s.index];
     if (!s || !step) return undefined;
+    // Every decline logs while a native-surface step is armed: three "no
+    // ghost, dead Tab" incidents were diagnosed blind because nothing said
+    // whether VS Code even queried the provider.
     if (this.typing) return undefined; // suppress the ghost mid-keystroke — settle re-offers
-    // Decoration-accept steps never serve a native item; only inserts (open-a-line)
-    // and non-dramatic single-line replaces ride the native ghost.
-    if (this.ridesDecoration(s, step)) return undefined;
+    if (this.ridesDecoration(s, step)) return undefined; // decoration steps never serve a native item
     const resolved = this.resolveCurrent(document);
-    if (resolved.kind !== "ok" || !resolved.cleanParse) return undefined; // never serve off a half-typed line
-    if (position.line !== resolved.range.start.line) return undefined;
+    if (resolved.kind !== "ok" || !resolved.cleanParse) {
+      this.output.appendLine(`[diff-replay] provider declined: ${resolved.kind === "ok" ? "dirty parse" : resolved.kind}`);
+      return undefined;
+    }
+    if (position.line !== resolved.range.start.line) {
+      this.output.appendLine(`[diff-replay] provider declined: query at line ${position.line + 1}, armed at ${resolved.range.start.line + 1}`);
+      return undefined;
+    }
 
     s.lastServed = { range: resolved.range, text: resolved.text };
+    this.output.appendLine(`[diff-replay] provider served the insert ghost (${resolved.text.split("\n").length} line(s))`);
     const item = new vscode.InlineCompletionItem(resolved.text, resolved.range);
     item.command = { command: "humanReplay.diffReplayAccepted", title: "Human Replay: next diff-replay step" };
     return item;
