@@ -90,9 +90,15 @@ export class ReplayOrchestrator {
   }
 
   // Tab on a struck rewrite: clear the old symbol, then descend-and-fill the new.
-  async acceptRewriteClear(): Promise<void> {
+  // Returns false only when nothing is pending (a stale context) — the caller
+  // falls through to a real indent so Tab is never a silent dead key.
+  async acceptRewriteClear(): Promise<boolean> {
     const p = this.pending;
-    if (!p) return;
+    if (!p) {
+      this.output.appendLine("[replay] tab: rewrite context is stale (nothing pending) — falling through to indent");
+      void vscode.commands.executeCommand("setContext", REWRITE_CONTEXT, false);
+      return false;
+    }
     // Claim before awaiting: a second Tab arriving while the delete is in flight
     // must find nothing pending, or the range gets deleted twice — the second
     // pass eating whatever bytes slid into it.
@@ -107,10 +113,11 @@ export class ReplayOrchestrator {
     if (p.newSrc.trim() === "") {
       this.output.appendLine("[replay] delete: cleared old symbol, nothing to disclose");
       this.onDeleteComplete?.(p.retro);
-      return;
+      return true;
     }
     this.output.appendLine("[replay] rewrite: cleared old symbol, disclosing new");
     await this.disclosure.start(p.editor, p.newSrc, p.retro, p.spec);
+    return true;
   }
 
   cancel(): void {

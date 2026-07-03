@@ -97,11 +97,19 @@ export function activate(context: vscode.ExtensionContext) {
       const editor = vscode.window.activeTextEditor;
       if (editor) diffReplay.onAccepted(editor);
     }),
-    vscode.commands.registerCommand("humanReplay.diffReplayAcceptDecoration", () => {
+    vscode.commands.registerCommand("humanReplay.diffReplayAcceptDecoration", async () => {
       const editor = vscode.window.activeTextEditor;
-      if (editor) void diffReplay.acceptDecoration(editor);
+      // A stale context must not make Tab a dead key: unhandled falls through
+      // to the editor's real indent.
+      if (!editor || !(await diffReplay.acceptDecoration(editor))) {
+        await vscode.commands.executeCommand("tab");
+      }
     }),
-    vscode.commands.registerCommand("humanReplay.acceptRewriteClear", () => void orchestrator.acceptRewriteClear()),
+    vscode.commands.registerCommand("humanReplay.acceptRewriteClear", async () => {
+      if (!(await orchestrator.acceptRewriteClear())) {
+        await vscode.commands.executeCommand("tab");
+      }
+    }),
     vscode.commands.registerCommand("humanReplay.skipHunk", () => {
       const editor = vscode.window.activeTextEditor;
       if (editor) diffReplay.skipCurrent(editor);

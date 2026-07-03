@@ -561,17 +561,30 @@ export class DiffReplayController {
   // Re-resolve against the live buffer at accept time — the human may have edited
   // since the decoration was shown — so the swap lands on the current range, and a
   // structural collision surfaces instead of clobbering the wrong span.
-  async acceptDecoration(editor: vscode.TextEditor): Promise<void> {
+  /** Returns false ONLY when no session owns the gesture (a stale context key
+   *  kept the Tab binding alive) — the caller falls through to a real indent
+   *  so Tab is never a silent dead key. Held/holding outcomes return true:
+   *  they are deliberate waits, and they log. */
+  async acceptDecoration(editor: vscode.TextEditor): Promise<boolean> {
     // Tab faster than an edit resolves and the same step lands twice: everything
     // below re-resolves the CURRENT step, and index only advances after the
     // awaited edit. One accept in flight at a time; extra Tabs drop.
-    if (this.accepting) return;
+    if (this.accepting) {
+      this.output.appendLine("[diff-replay] tab ignored — an accept is already in flight");
+      return true;
+    }
+    if (!this.session) {
+      this.output.appendLine("[diff-replay] tab: decoration context is stale (no session) — falling through to indent");
+      void vscode.commands.executeCommand("setContext", DECORATION_CONTEXT, false);
+      return false;
+    }
     this.accepting = true;
     try {
       await this.acceptDecorationInner(editor);
     } finally {
       this.accepting = false;
     }
+    return true;
   }
 
   private async acceptDecorationInner(editor: vscode.TextEditor): Promise<void> {
