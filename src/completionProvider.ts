@@ -176,7 +176,7 @@ export class HumanReplayCompletionProvider
       // The server is up but the model isn't pulled: Ollama 404s every request.
       // Detect and guide once — a one-click download the human ratifies, never
       // an automatic pull. Success clears the latch so the next keystroke works.
-      if (/Ollama 404\b|try pulling it first/i.test(String(err))) {
+      if (/Ollama 404\b|try pulling it first|invalid model name/i.test(String(err))) {
         if (this.warnedMissingModel !== cfg.model) {
           this.warnedMissingModel = cfg.model;
           this.output.appendLine(`[human-replay] model "${cfg.model}" not installed — autocomplete idle until it is`);

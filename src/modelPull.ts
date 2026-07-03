@@ -32,7 +32,10 @@ const SIZES = [
 // the pick to settings so it sticks).
 async function chooseModel(configured: string): Promise<string | undefined> {
   const info = vscode.workspace.getConfiguration("humanReplay").inspect<string>("model");
-  const explicit = info?.globalValue !== undefined || info?.workspaceValue !== undefined || info?.workspaceFolderValue !== undefined;
+  // "Chosen" means a NON-EMPTY value: the settings UI stores "" when a field
+  // is cleared, and an empty string is an un-choice, not a model.
+  const isSet = (v: string | undefined) => v !== undefined && v.trim() !== "";
+  const explicit = isSet(info?.globalValue) || isSet(info?.workspaceValue) || isSet(info?.workspaceFolderValue);
   if (explicit) return configured;
   return pickModel(configured);
 }
@@ -145,6 +148,11 @@ export async function offerModelPull(
   output: vscode.OutputChannel,
   why: string,
 ): Promise<boolean> {
+  if (model.trim() === "") {
+    // Defense in depth behind the config fallback: pulling "" is an Ollama 400.
+    void vscode.window.showWarningMessage("Human Replay: no model is set — run 'Autocomplete: Choose Model'.");
+    return false;
+  }
   const choice = await vscode.window.showWarningMessage(`Human Replay: ${why}.`, "Download");
   if (choice !== "Download") return false;
 

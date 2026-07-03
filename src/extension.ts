@@ -140,7 +140,8 @@ export function activate(context: vscode.ExtensionContext) {
         if (choice !== "Send anyway") return;
       }
       const cfg = readConfig();
-      const model = vscode.workspace.getConfiguration("humanReplay").get<string>("promptModel", "qwen2.5-coder:7b-instruct");
+      // Same emptied-setting trap as humanReplay.model: "" must fall back.
+      const model = vscode.workspace.getConfiguration("humanReplay").get<string>("promptModel", "qwen2.5-coder:7b-instruct").trim() || "qwen2.5-coder:7b-instruct";
       const code = editor.document.getText();
       const messages = buildMessages("the function under review", code, comments.comments);
       try {
