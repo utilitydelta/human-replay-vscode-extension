@@ -84,6 +84,11 @@ export class DiffReplayController {
   // reused; the incoming text is set per-range via renderOptions.
   private readonly doomed: vscode.TextEditorDecorationType;
   private readonly incoming: vscode.TextEditorDecorationType;
+  // The gesture hint + hunk counter, ambient while a session runs. The native
+  // ghost is VS Code's rendering (nothing can be appended to it), so the
+  // status bar is where those hunks' gestures live; decoration hunks carry the
+  // hint inline as well.
+  private readonly gestures: vscode.StatusBarItem;
 
   constructor(private readonly output: vscode.OutputChannel) {
     this.doomed = vscode.window.createTextEditorDecorationType({
@@ -91,6 +96,24 @@ export class DiffReplayController {
       backgroundColor: "rgba(248, 81, 73, 0.18)",
     });
     this.incoming = vscode.window.createTextEditorDecorationType({});
+    this.gestures = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
+  }
+
+  dispose(): void {
+    this.gestures.dispose();
+    this.doomed.dispose();
+    this.incoming.dispose();
+  }
+
+  private updateGestureHint(): void {
+    const s = this.session;
+    if (!s || s.index >= s.steps.length) {
+      this.gestures.hide();
+      return;
+    }
+    this.gestures.text = `$(diff) hunk ${s.index + 1}/${s.steps.length} — Tab applies · Shift+Esc skips`;
+    this.gestures.tooltip = "Tab lands this hunk's sandbox bytes; Shift+Esc keeps yours and moves on; Esc cancels the step";
+    this.gestures.show();
   }
 
   setCompletionHandler(handler: NonNullable<DiffReplayController["onComplete"]>): void {
@@ -245,6 +268,7 @@ export class DiffReplayController {
   cancel(): void {
     if (!this.session) return;
     this.output.appendLine(`[diff-replay] cancelled at step ${this.session.index}`);
+    this.gestures.hide();
     const editor = vscode.window.activeTextEditor;
     if (editor) this.clearDecorations(editor);
     void vscode.commands.executeCommand("setContext", DECORATION_CONTEXT, false);
@@ -402,6 +426,7 @@ export class DiffReplayController {
     this.onCollision?.();
     this.output.appendLine("[diff-replay] collision: a step's node was edited away — surfacing");
     this.clearSettle();
+    this.gestures.hide();
     this.clearDecorations(editor);
     void vscode.commands.executeCommand("setContext", DECORATION_CONTEXT, false);
     this.session = undefined;
@@ -459,6 +484,7 @@ export class DiffReplayController {
   private renderCurrent(editor: vscode.TextEditor): void {
     const s = this.session;
     if (!s) return;
+    this.updateGestureHint();
     if (s.index >= s.steps.length) {
       this.complete(editor);
       return;
@@ -508,7 +534,9 @@ export class DiffReplayController {
     // and says how much more Tab will land.
     const lines = text.split("\n");
     const hint =
-      lines.length > 1 ? `  ⟶  ${lines[0].trim()} … (+${lines.length - 1} more line${lines.length > 2 ? "s" : ""}, Tab applies)` : `  ⟶  ${text}`;
+      lines.length > 1
+        ? `  ⟶  ${lines[0].trim()} … (+${lines.length - 1} more line${lines.length > 2 ? "s" : ""} — Tab applies · Shift+Esc skips)`
+        : `  ⟶  ${text}   (Tab · Shift+Esc skips)`;
     editor.setDecorations(this.incoming, [
       {
         range,
@@ -592,6 +620,7 @@ export class DiffReplayController {
     const s = this.session;
     if (!s) return;
     this.clearSettle();
+    this.gestures.hide();
     this.clearDecorations(editor);
     void vscode.commands.executeCommand("setContext", DECORATION_CONTEXT, false);
     void vscode.commands.executeCommand("setContext", ACTIVE_CONTEXT, false);

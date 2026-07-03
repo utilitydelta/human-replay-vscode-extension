@@ -32,6 +32,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   const disclosure = new DisclosureController(output);
   const diffReplay = new DiffReplayController(output);
+  context.subscriptions.push(diffReplay);
   const orchestrator = new ReplayOrchestrator(output, disclosure, diffReplay);
   const guideRunner = new GuideRunner(output, disclosure, orchestrator);
   // The comment layer feeds two consumers: the sandbox prompt generator, and
