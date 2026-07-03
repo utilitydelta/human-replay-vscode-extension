@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { cleanWalkRegion, computeSteps } from "./walk";
 import { DisclosureSession } from "./session";
-import { appendEdit, innermostContainerKey } from "./anchoredInsert";
+import { appendEdit, containerKeyChain, innermostContainerKey } from "./anchoredInsert";
 import { buildRecoveryGhost } from "./recoveryGhost";
 import { LanguageSpec, RUST } from "./language";
 import { revealCursor } from "./reveal";
@@ -384,8 +384,15 @@ export class DisclosureController {
 
     const symbolText = this.extractSymbol(editor.document);
     const cursorRel = editor.document.offsetAt(editor.selection.active) - s.anchorOffset;
-    const eligible =
-      symbolText === undefined || innermostContainerKey(symbolText, cursorRel, s.spec) === step.parentKey;
+    // Three postures, not two. Caret in the node's own parent → inline ghost.
+    // Caret in a DESCENDANT of the parent (the climb-out: the ctor is done,
+    // the next method belongs to the class) → Tab is armed — placement is
+    // structural (appendEdit at the parent's frontier), only rendering at the
+    // cursor is off, so say what Tab will do. Caret anywhere else → wait.
+    const chain = symbolText === undefined ? undefined : containerKeyChain(symbolText, cursorRel, s.spec);
+    const inline = chain === undefined || chain[0] === step.parentKey;
+    const climbOut = !inline && chain!.includes(step.parentKey);
+    const eligible = inline || climbOut;
     if (symbolText === undefined && !this.hintedNoVerdict) {
       // No verdict: ghosts land at the cursor unverified. Say so once — a
       // tabbing human can't see that structure checks are off.
@@ -410,6 +417,12 @@ export class DisclosureController {
       return;
     }
     this.hintedIneligible = false;
+    if (climbOut) {
+      const node = step.bareText.split("\n")[0].trim();
+      const home = `\`${step.parentKey.split("\n")[0].trim()}\``;
+      void vscode.window.setStatusBarMessage(`Human Replay: Tab lands \`${node}\` in ${home}`, 6000);
+      return;
+    }
     void vscode.commands.executeCommand("editor.action.inlineSuggest.trigger");
   }
 
@@ -449,11 +462,13 @@ export class DisclosureController {
     this.recoverySettled = true; // an explicit Tab — the next ghost may show at once
     const symbolText = this.extractSymbol(editor.document);
     // Defense in depth behind the recoveryEligible context gate: a Tab that
-    // slips through while the caret sits outside the node's container must not
-    // place bytes the human didn't aim — hold, don't append.
+    // slips through while the caret sits outside the node's parent — AND not
+    // in one of its descendants (the climb-out, where placement is structural
+    // and unambiguous) — must not place bytes the human didn't aim.
     if (symbolText !== undefined) {
       const cursorRel = editor.document.offsetAt(editor.selection.active) - s.anchorOffset;
-      if (innermostContainerKey(symbolText, cursorRel, s.spec) !== step.parentKey) {
+      const chain = containerKeyChain(symbolText, cursorRel, s.spec);
+      if (chain[0] !== step.parentKey && !chain.includes(step.parentKey)) {
         this.output.appendLine("[disclosure] tab held — caret outside the walk's container");
         return;
       }

@@ -77,6 +77,27 @@ export function innermostContainerKey(symbolText: string, offset: number, spec: 
   return key;
 }
 
+/**
+ * Every container key on the cursor's ancestor chain, innermost first — the
+ * containers whose body holds `offset`. The climb-out eligibility test: a
+ * planned node whose parent is an ANCESTOR of the cursor's container places
+ * structurally (appendEdit at that parent's frontier) with no ambiguity, so
+ * Tab may act without the caret moving first.
+ */
+export function containerKeyChain(symbolText: string, offset: number, spec: LanguageSpec = RUST): string[] {
+  const root = parseRoot(symbolText, spec);
+  const hits: { span: number; key: string }[] = [];
+  (function scan(node: SyntaxNode): void {
+    const u = unwrap(node);
+    const d = descendable(u, spec);
+    if (d && offset > d.block.startIndex && offset < d.block.endIndex) {
+      hits.push({ span: d.block.endIndex - d.block.startIndex, key: symbolText.slice(u.startIndex, d.block.startIndex).trim() });
+    }
+    for (const c of namedChildren(node)) scan(c);
+  })(root);
+  return hits.sort((a, b) => a.span - b.span).map((h) => h.key);
+}
+
 /** A region-relative replace that appends `nodeText` into a parent's body. */
 export interface AppendEdit {
   start: number;

@@ -21,7 +21,7 @@ const bundle = path.join(__dirname, ".container-walk.bundle.cjs");
 fs.writeFileSync(
   path.join(__dirname, ".container-walk.entry.ts"),
   `export { computeSteps, walkableSource, cleanWalkRegion } from "../src/disclosure/walk";\n` +
-    `export { appendEdit, applyAppend } from "../src/disclosure/anchoredInsert";\n` +
+    `export { appendEdit, applyAppend, containerKeyChain } from "../src/disclosure/anchoredInsert";\n` +
     `export { buildRecoveryGhost } from "../src/disclosure/recoveryGhost";\n` +
     `export { RUST, CSHARP, TYPESCRIPT, PYTHON } from "../src/disclosure/language";\n`,
 );
@@ -33,7 +33,7 @@ esbuild.buildSync({
   platform: "node",
   external: EXTERNALS,
 });
-const { computeSteps, walkableSource, cleanWalkRegion, appendEdit, applyAppend, buildRecoveryGhost, RUST, CSHARP, TYPESCRIPT, PYTHON } = require(bundle);
+const { computeSteps, walkableSource, cleanWalkRegion, appendEdit, applyAppend, buildRecoveryGhost, containerKeyChain, RUST, CSHARP, TYPESCRIPT, PYTHON } = require(bundle);
 test.after(() => {
   fs.rmSync(bundle, { force: true });
   fs.rmSync(path.join(__dirname, ".container-walk.entry.ts"), { force: true });
@@ -176,6 +176,22 @@ test("cleanWalkRegion: a dirty parse yields no verdict, a clean one yields the r
   const clean = `public static class DiscountMath\n{\n    \n}\n`;
   const region = cleanWalkRegion(clean, CSHARP);
   assert.ok(region !== undefined && region.trimEnd().endsWith("}"), "clean tail → the walked node's region");
+});
+
+test("containerKeyChain: the cursor's ancestors, innermost first — the climb-out test", () => {
+  // Caret at the end of the ctor's last statement: the innermost container is
+  // the ctor, and the class is on the chain — so a planned method whose parent
+  // is the class is a CLIMB-OUT (Tab places structurally), while a foreign
+  // container would not be on the chain at all.
+  const src = `public class DiscountRule\n{\n    public DiscountRule(string name)\n    {\n        var brrr = 99;\n        Name = name;\n    }\n}`;
+  const at = src.indexOf("Name = name;") + "Name = name;".length;
+  const chain = containerKeyChain(src, at, CSHARP);
+  assert.strictEqual(chain.length, 2, "ctor and class on the chain");
+  assert.ok(chain[0].startsWith("public DiscountRule("), "innermost is the ctor");
+  assert.strictEqual(chain[1], "public class DiscountRule", "the class is an ancestor — climb-out eligible");
+
+  const outside = containerKeyChain(src, 2, CSHARP); // on the class header line
+  assert.deepStrictEqual(outside, [], "outside every block → empty chain");
 });
 
 test("cleanWalkRegion: unparseable bytes BELOW the region don't revoke its verdict", () => {
