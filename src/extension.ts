@@ -177,12 +177,26 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Bail out of whatever the replay is showing — insert walk, diff-replay
   // decorations, or a rewrite strike. One gesture (Esc / palette), every engine;
-  // the buffer stays as-is and the guide step stays current for a re-run.
+  // the buffer stays as-is and the guide step stays current for a re-run. This
+  // cancels the STEP, not the session — End Replay Session is the full stop.
   context.subscriptions.push(
     vscode.commands.registerCommand("humanReplay.cancelDisclosure", () => {
       disclosure.cancel();
       orchestrator.cancelAll();
       guideRunner.cancelInFlight(); // a stray completion must not mark the cancelled step done
+    }),
+  );
+
+  // The full stop: tear down the engines AND unload the guide, so the panel
+  // and status bar retire. Position survives in workspaceState and re-derives
+  // from bytes on the next Start Replay.
+  context.subscriptions.push(
+    vscode.commands.registerCommand("humanReplay.endReplay", () => {
+      disclosure.cancel();
+      orchestrator.cancelAll();
+      guideRunner.cancelInFlight();
+      guideRunner.unload();
+      vscode.window.setStatusBarMessage("Human Replay: replay session ended", 3000);
     }),
   );
 

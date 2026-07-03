@@ -61,7 +61,12 @@
       },
       {
         "command": "humanReplay.cancelDisclosure",
-        "title": "Cancel Replay",
+        "title": "Cancel Current Step",
+        "category": "Human Replay"
+      },
+      {
+        "command": "humanReplay.endReplay",
+        "title": "End Replay Session",
         "category": "Human Replay"
       },
       {

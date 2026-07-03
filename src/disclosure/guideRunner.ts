@@ -192,6 +192,19 @@ export class GuideRunner {
     return this.pc.isComplete;
   }
 
+  /** End the replay session: unload the guide, drop the sandbox pin, reset the
+   *  counter. The panel and status bar key off `loaded`, so they retire with
+   *  it. Done/skipped marks live in workspaceState and re-derive from bytes on
+   *  the next load — ending a session never loses position. */
+  unload(): void {
+    this.fileWalk = undefined;
+    this.guide = undefined;
+    this.sessionSandboxRoot = undefined;
+    this.pc.reset(0);
+    this.changed();
+    this.output.appendLine("[guide] replay session ended — guide unloaded");
+  }
+
   load(md: string): ReplayGuide {
     const guide = parseGuide(md); // throws loud on a malformed guide (invariant 3)
     this.guide = guide;
