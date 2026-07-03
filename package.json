@@ -70,6 +70,11 @@
         "category": "Human Replay"
       },
       {
+        "command": "humanReplay.skipHunk",
+        "title": "Skip This Hunk (keep your bytes)",
+        "category": "Human Replay"
+      },
+      {
         "command": "humanReplay.runNextStep",
         "title": "Run Next Step",
         "category": "Human Replay"
@@ -114,6 +119,11 @@
         "command": "humanReplay.diffReplayAcceptDecoration",
         "key": "tab",
         "when": "editorTextFocus && humanReplay.diffDecorationActive && !suggestWidgetVisible && !inlineSuggestionVisible"
+      },
+      {
+        "command": "humanReplay.skipHunk",
+        "key": "shift+escape",
+        "when": "editorTextFocus && (humanReplay.diffDecorationActive || humanReplay.diffReplayActive)"
       },
       {
         "command": "humanReplay.acceptRewriteClear",

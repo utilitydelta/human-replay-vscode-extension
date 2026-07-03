@@ -101,6 +101,10 @@ export function activate(context: vscode.ExtensionContext) {
       if (editor) void diffReplay.acceptDecoration(editor);
     }),
     vscode.commands.registerCommand("humanReplay.acceptRewriteClear", () => void orchestrator.acceptRewriteClear()),
+    vscode.commands.registerCommand("humanReplay.skipHunk", () => {
+      const editor = vscode.window.activeTextEditor;
+      if (editor) diffReplay.skipCurrent(editor);
+    }),
   );
 
   // Surfacing layer: collate inline comments while reading the replay, then take

@@ -411,6 +411,24 @@ export class DiffReplayController {
     );
   }
 
+  /** Decline the current hunk and move to the next — the "keep my line, take
+   *  the rest" gesture. A patch step converges the file on the sandbox, so a
+   *  human addition shows up as a deletion hunk; skipping it is the human
+   *  overruling that one delta without abandoning the step. The file then ends
+   *  off the sandbox bytes on purpose — resume derivation reads it as pending,
+   *  which is the honest verdict. */
+  skipCurrent(editor: vscode.TextEditor): void {
+    const s = this.session;
+    const step = s?.steps[s.index];
+    if (!s || !step) return;
+    this.clearSettle();
+    s.index++;
+    this.editedCurrentLine = false;
+    this.clearDecorations(editor);
+    this.output.appendLine(`[diff-replay] hunk ${s.index}/${s.steps.length} skipped by the human`);
+    this.renderCurrent(editor);
+  }
+
   // Single trigger path: a cursor landing on the current step's range start asks
   // for the ghost (next step after an accept, or a restored ghost after wandering).
   async onSelectionChanged(document: vscode.TextDocument, position: vscode.Position): Promise<void> {
