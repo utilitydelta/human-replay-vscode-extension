@@ -18,6 +18,33 @@ export function startOllamaTerminal(output: vscode.OutputChannel): void {
 
 const has = (models: string[], model: string) => models.includes(model) || models.includes(`${model}:latest`);
 
+// The size choice, in the persona's language. No VRAM auto-detection: Ollama's
+// API exposes no total-VRAM endpoint and per-OS probing is plumbing the human
+// shouldn't own — an honest trade-off line beats a guess. Benchmarked on an
+// RTX 5080: Fast ≈150ms per suggestion, Smart ≈200-400ms and visibly better.
+const SIZES = [
+  { label: "Fast", detail: "1.5b — ~1 GB download, quick on any machine", model: "qwen2.5-coder:1.5b-base" },
+  { label: "Smart", detail: "7b — ~4.7 GB download, wants a capable GPU (≈8 GB VRAM)", model: "qwen2.5-coder:7b-base" },
+];
+
+// Which model to set up. A model the human explicitly configured is respected
+// verbatim; the untouched default opens the Fast/Smart choice (and persists
+// the pick to settings so it sticks).
+async function chooseModel(configured: string): Promise<string | undefined> {
+  const info = vscode.workspace.getConfiguration("humanReplay").inspect<string>("model");
+  const explicit = info?.globalValue !== undefined || info?.workspaceValue !== undefined || info?.workspaceFolderValue !== undefined;
+  if (explicit) return configured;
+  const pick = await vscode.window.showQuickPick(
+    SIZES.map((s) => ({ label: s.label, detail: s.detail, model: s.model })),
+    { title: "Human Replay: choose your autocomplete model", placeHolder: "Changeable any time via humanReplay.model" },
+  );
+  if (!pick) return undefined;
+  if (pick.model !== configured) {
+    await vscode.workspace.getConfiguration("humanReplay").update("model", pick.model, vscode.ConfigurationTarget.Global);
+  }
+  return pick.model;
+}
+
 /**
  * The intent gesture's walk: called when the human turns autocomplete ON.
  * Server down → offer to start it (and wait for it to come up). Model absent →
@@ -40,8 +67,12 @@ export async function ensureAutocompleteReady(apiBase: string, model: string, ou
     }
   }
   if (!has(models, model)) {
-    await offerModelPull(apiBase, model, output, "local autocomplete needs its model — a one-time download");
-    return;
+    const chosen = await chooseModel(model);
+    if (chosen === undefined) return;
+    if (!has(models, chosen)) {
+      await offerModelPull(apiBase, chosen, output, "local autocomplete needs its model — a one-time download");
+      return;
+    }
   }
   void vscode.window.setStatusBarMessage("Human Replay: local autocomplete is ready", 3000);
 }

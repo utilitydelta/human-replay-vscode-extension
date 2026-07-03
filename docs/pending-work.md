@@ -30,3 +30,13 @@ the CJS externals/loading (or move to dynamic `import()`), re-run the full
 oracle suite, and re-probe the C#12 corpus. Trigger: sandbox agents emitting
 modern syntax (primary constructors, newer TS) often enough that block-ghost
 fallbacks noticeably replace walks.
+
+## Cross-file context for FIM
+
+Both FIM model sizes invent members (`cart.Filter`, `.Price`) because the
+prompt carries only the current file — `Cart.cs` never enters the context.
+Benchmarked on the demo repo: model size sharpens the code shape but cannot
+fix missing type knowledge. When funded: weave the definitions of symbols
+referenced near the caret (tree-sitter already resolves them per language)
+into the prompt the same way replay notes weave in — prompt-only, no buffer
+bytes, capped by prefixChars.
