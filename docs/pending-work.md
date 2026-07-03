@@ -54,15 +54,3 @@ credential on the identity for this repo (environment-scoped subject),
 publish job before the deadline; the GitHub Release half of the workflow is
 unaffected either way.
 
-## Full multi-line preview for insert hunks (pending-bytes)
-
-Diff-replay is decoration-only: instrumentation proved VS Code renders
-programmatically-armed native inline suggestions at its own discretion (an
-insert hunk served three consecutive arms, drew none, while sibling inserts
-rendered fine). A decoration's contentText cannot draw newlines, so insert
-hunks preview as first-line-plus-count. The designed successor: PENDING
-BYTES — arm inserts by writing the real bytes tinted as pending (green
-background, "Tab keeps · Shift+Esc removes" hint), Tab confirms, skip or
-cancel deletes the range. Touches accept/skip/cancel bookkeeping and the
-noteChange self-edit filter; the walk's byte-verify already guards the
-outcome.
