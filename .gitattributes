@@ -1,0 +1,6 @@
+# Byte-exactness is the product: oracles compare real files byte-for-byte,
+# so a CRLF checkout on Windows breaks the shipped-guide tests. Everything
+# text stays LF everywhere.
+* text=auto eol=lf
+*.png binary
+*.vsix binary

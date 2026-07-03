@@ -22,8 +22,10 @@ jobs:
             target: linux-x64
           - os: windows-latest
             target: win32-x64
-          - os: macos-13
-            target: darwin-x64
+          # darwin-x64 has no free GitHub runner anymore (macos-13 retired;
+          # Intel images are paid "-large" only) — a job naming it queues
+          # forever and wedges the release. Intel-Mac users wait for a paid
+          # runner or a self-hosted build.
           - os: macos-latest
             target: darwin-arm64
     runs-on: ${{ matrix.os }}
