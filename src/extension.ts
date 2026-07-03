@@ -200,6 +200,25 @@ export function activate(context: vscode.ExtensionContext) {
     }),
   );
 
+  // The rollback gesture: re-read every step's status from the bytes on disk.
+  // Rolling a file back mid-session left stale green ticks — the counter is
+  // memory, and nothing re-reads bytes until the next load.
+  context.subscriptions.push(
+    vscode.commands.registerCommand("humanReplay.resync", () => {
+      if (!guideRunner.loaded) {
+        vscode.window.showInformationMessage("Human Replay: no replay session to resync — run Start Replay first.");
+        return;
+      }
+      disclosure.cancel();
+      orchestrator.cancelAll();
+      guideRunner.cancelInFlight();
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (root) guideRunner.resync(root);
+      updateGuideStatus();
+      vscode.window.setStatusBarMessage("Human Replay: step statuses re-derived from your files", 3000);
+    }),
+  );
+
   // The full stop: tear down the engines AND unload the guide, so the panel
   // and status bar retire. Position survives in workspaceState and re-derives
   // from bytes on the next Start Replay.

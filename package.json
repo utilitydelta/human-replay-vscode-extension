@@ -70,6 +70,11 @@
         "category": "Human Replay"
       },
       {
+        "command": "humanReplay.resync",
+        "title": "Resync Steps from Files (after a rollback)",
+        "category": "Human Replay"
+      },
+      {
         "command": "humanReplay.skipHunk",
         "title": "Skip This Hunk (keep your bytes)",
         "category": "Human Replay"

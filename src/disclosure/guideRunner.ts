@@ -264,6 +264,21 @@ export class GuideRunner {
     return this.pausedBefore;
   }
 
+  /** Re-derive every step's status from the bytes on disk — the gesture after
+   *  a rollback. Done marks are recomputed from ground truth (a reverted
+   *  symbol falls back to pending); skips survive (human intent bytes can't
+   *  derive); a phase pause clears. The caller tears down any in-flight
+   *  engines first. */
+  resync(workspaceRoot: string): void {
+    const skipped = this.pc.snapshot().skipped;
+    this.pc.reset(this.steps.length);
+    for (const i of skipped) this.pc.skip(i);
+    this.pausedBefore = undefined;
+    const landed = this.deriveLanded(workspaceRoot);
+    this.changed();
+    this.output.appendLine(`[guide] resynced from files — ${landed} step(s) read as landed, ${skipped.length} skip(s) kept`);
+  }
+
   /** End the replay session: unload the guide, drop the sandbox pin, reset the
    *  counter. The panel and status bar key off `loaded`, so they retire with
    *  it. Done/skipped marks live in workspaceState and re-derive from bytes on
