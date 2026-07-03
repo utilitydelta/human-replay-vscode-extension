@@ -12,7 +12,7 @@ import { CommentLayer } from "./disclosure/comments";
 import { buildMessages, generatePrompt } from "./disclosure/promptgen";
 import { setIsActionable } from "./disclosure/actionability";
 import { readConfig } from "./config";
-import { ensureAutocompleteReady, offerModelPull, startOllamaTerminal } from "./modelPull";
+import { chooseAutocompleteModel, ensureAutocompleteReady, offerModelPull, startOllamaTerminal } from "./modelPull";
 import { surfaceRetrospective } from "./retrospective/surface";
 
 export function activate(context: vscode.ExtensionContext) {
@@ -21,6 +21,10 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand("humanReplay.startOllama", () => startOllamaTerminal(output)),
+    vscode.commands.registerCommand("humanReplay.chooseModel", () => {
+      const c = readConfig();
+      void chooseAutocompleteModel(c.apiBase, c.model, output);
+    }),
   );
 
   const retrospectives = vscode.languages.createDiagnosticCollection("replay-retrospective");

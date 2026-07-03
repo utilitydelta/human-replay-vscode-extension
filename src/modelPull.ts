@@ -34,15 +34,55 @@ async function chooseModel(configured: string): Promise<string | undefined> {
   const info = vscode.workspace.getConfiguration("humanReplay").inspect<string>("model");
   const explicit = info?.globalValue !== undefined || info?.workspaceValue !== undefined || info?.workspaceFolderValue !== undefined;
   if (explicit) return configured;
-  const pick = await vscode.window.showQuickPick(
-    SIZES.map((s) => ({ label: s.label, detail: s.detail, model: s.model })),
-    { title: "Human Replay: choose your autocomplete model", placeHolder: "Changeable any time via humanReplay.model" },
-  );
+  return pickModel(configured);
+}
+
+// The picker itself — Fast/Smart plus a free-form escape for any Ollama model
+// name. Persists the pick so it holds across sessions.
+async function pickModel(configured: string): Promise<string | undefined> {
+  type Item = vscode.QuickPickItem & { model?: string };
+  const items: Item[] = SIZES.map((s) => ({
+    label: s.label,
+    detail: s.detail,
+    description: s.model === configured ? "current" : undefined,
+    model: s.model,
+  }));
+  items.push({ label: "$(edit) Other…", detail: "Any Ollama FIM base model, by name" });
+  const pick = await vscode.window.showQuickPick(items, {
+    title: "Human Replay: choose your autocomplete model",
+    placeHolder: "Changeable any time — Human Replay: Autocomplete: Choose Model",
+  });
   if (!pick) return undefined;
-  if (pick.model !== configured) {
-    await vscode.workspace.getConfiguration("humanReplay").update("model", pick.model, vscode.ConfigurationTarget.Global);
+  const model =
+    pick.model ??
+    (await vscode.window.showInputBox({
+      title: "Ollama model name",
+      value: configured,
+      prompt: "A FIM-capable BASE model (instruct models cannot fill-in-the-middle)",
+    }));
+  if (!model) return undefined;
+  if (model !== configured) {
+    await vscode.workspace.getConfiguration("humanReplay").update("model", model, vscode.ConfigurationTarget.Global);
   }
-  return pick.model;
+  return model;
+}
+
+/** The palette command: always shows the picker (the first-run walk only asks
+ *  once), then makes sure the pick is actually usable — offering the download
+ *  when the server is up and the model absent. */
+export async function chooseAutocompleteModel(apiBase: string, configured: string, output: vscode.OutputChannel): Promise<void> {
+  const model = await pickModel(configured);
+  if (model === undefined) return;
+  const models = await listModels(apiBase);
+  if (models === undefined) {
+    void vscode.window.showInformationMessage("Human Replay: model set. Start the model server to use it (Toggle Autocomplete walks you through).");
+    return;
+  }
+  if (!has(models, model)) {
+    await offerModelPull(apiBase, model, output, "local autocomplete needs its model — a one-time download");
+    return;
+  }
+  void vscode.window.showInformationMessage(`Human Replay: autocomplete now uses ${model}.`);
 }
 
 /**

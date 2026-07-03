@@ -75,6 +75,11 @@
         "category": "Human Replay"
       },
       {
+        "command": "humanReplay.chooseModel",
+        "title": "Autocomplete: Choose Model",
+        "category": "Human Replay"
+      },
+      {
         "command": "humanReplay.guide.runStepAt",
         "title": "Run This Step",
         "icon": "$(play)"
