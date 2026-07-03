@@ -77,8 +77,17 @@ export class DisclosureController {
   private recoveryEligible = false; // mirror of the context key, for dedupe
   private hintedIneligible = false; // one hint per excursion out of the container
   private hintedNoVerdict = false; // one hint per session when the region won't parse
+  // The climb-out preview: the caret can't host the ghost (it sits in a child
+  // block), so the landing spot shows a decoration instead — no leap of faith.
+  private readonly climbPreview: vscode.TextEditorDecorationType;
 
-  constructor(private readonly output: vscode.OutputChannel) {}
+  constructor(private readonly output: vscode.OutputChannel) {
+    this.climbPreview = vscode.window.createTextEditorDecorationType({});
+  }
+
+  private clearClimbPreview(editor?: vscode.TextEditor): void {
+    (editor ?? vscode.window.activeTextEditor)?.setDecorations(this.climbPreview, []);
+  }
 
   // Called once with the completed session when a walk reaches its last step —
   // the hook the retrospective gating hangs on (the step end is a thinking point).
@@ -244,6 +253,7 @@ export class DisclosureController {
   // where the symbol is intentionally left partly built for the human to finish.
   private end(): void {
     this.clearSettle();
+    this.clearClimbPreview();
     this.session = undefined;
     this.lastOffered = undefined;
     this.recoveryGhost = undefined;
@@ -256,6 +266,7 @@ export class DisclosureController {
   private finish(session: DisclosureSession): void {
     this.output.appendLine(`[disclosure] complete (${session.steps.length} steps)`);
     this.clearSettle();
+    this.clearClimbPreview();
     this.session = undefined;
     this.lastOffered = undefined;
     this.recoveryGhost = undefined;
@@ -329,6 +340,7 @@ export class DisclosureController {
       for (const c of e.contentChanges) {
         if (this.lastOffered && c.text === this.lastOffered.text) return; // our own insert/accept
         this.recoverySettled = false;
+        this.clearClimbPreview(); // offsets are shifting under the preview
         this.scheduleGhost();
         return;
       }
@@ -405,6 +417,7 @@ export class DisclosureController {
     }
     this.setRecoveryEligible(eligible);
     if (!eligible) {
+      this.clearClimbPreview(editor);
       if (!this.hintedIneligible) {
         this.hintedIneligible = true;
         const home = step.parentKey === "ROOT" ? "the function body" : `\`${step.parentKey.split("\n")[0].trim()}\``;
@@ -421,8 +434,24 @@ export class DisclosureController {
       const node = step.bareText.split("\n")[0].trim();
       const home = `\`${step.parentKey.split("\n")[0].trim()}\``;
       void vscode.window.setStatusBarMessage(`Human Replay: Tab lands \`${node}\` in ${home}`, 6000);
+      // Show the landing itself: a green preview at the parent's append
+      // frontier — the exact spot Tab's structural placement uses.
+      const edit = symbolText !== undefined ? appendEdit(symbolText, step.parentKey, step.bareText, s.spec) : null;
+      if (edit) {
+        const lines = step.bareText.split("\n");
+        const hint =
+          lines.length > 1 ? `  ⟶  ${node} … (+${lines.length - 1} more line${lines.length > 2 ? "s" : ""} — Tab lands here)` : `  ⟶  ${node}   (Tab lands here)`;
+        const at = editor.document.positionAt(s.anchorOffset + edit.start);
+        editor.setDecorations(this.climbPreview, [
+          {
+            range: new vscode.Range(at, at),
+            renderOptions: { after: { contentText: hint, color: "#3fb950", fontStyle: "italic" } },
+          },
+        ]);
+      }
       return;
     }
+    this.clearClimbPreview(editor);
     void vscode.commands.executeCommand("editor.action.inlineSuggest.trigger");
   }
 
@@ -496,6 +525,7 @@ export class DisclosureController {
         caretOff = s.anchorOffset + edit.start + at + innerIndent;
       }
     }
+    this.clearClimbPreview(editor); // the landing is about to become real bytes
     this.lastOffered = { offset: s.anchorOffset + edit.start, text }; // skip our own edit in noteChange
     await editor.edit((b) => b.replace(new vscode.Range(start, end), text));
     const caret = editor.document.positionAt(caretOff);
