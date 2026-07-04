@@ -2,7 +2,7 @@
   "name": "human-replay",
   "displayName": "Human Replay",
   "description": "Replay sandboxed AI work into your real branch one Tab at a time. Guide-driven, model-free replay; local FIM autocomplete on the side.",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "publisher": "utilitydelta",
   "license": "Apache-2.0",
   "icon": "media/icon.png",
@@ -263,7 +263,7 @@
         "humanReplay.guidePath": {
           "type": "string",
           "default": "",
-          "description": "Path or glob to a replay guide (.md). Empty scans the workspace's replay-guides/ folder."
+          "description": "Path or glob to a replay guide (.md). Empty looks for the workspace's session/replay-guide.md, then falls back to the legacy replay-guides/ folder."
         },
         "humanReplay.sandboxRoot": {
           "type": "string",

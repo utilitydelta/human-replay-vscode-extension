@@ -335,6 +335,10 @@ export function activate(context: vscode.ExtensionContext) {
       if (explicit.startsWith("/")) return [vscode.Uri.file(explicit)];
       return vscode.workspace.findFiles(explicit);
     }
+    // session/replay-guide.md is the convention; replay-guides/*.md is the
+    // legacy location older guides still live in.
+    const current = await vscode.workspace.findFiles("session/replay-guide.md");
+    if (current.length > 0) return current;
     return vscode.workspace.findFiles("replay-guides/*.md");
   };
 
@@ -414,14 +418,18 @@ export function activate(context: vscode.ExtensionContext) {
       const items: SandboxItem[] = dirs.map((d) => ({
         label: d.name,
         description: d.full === last?.sandbox ? "last replay" : undefined,
-        detail: fs.existsSync(path.join(d.full, "replay-guides")) ? "has replay-guides/" : undefined,
+        detail: fs.existsSync(path.join(d.full, "session", "replay-guide.md"))
+          ? "has session/replay-guide.md"
+          : fs.existsSync(path.join(d.full, "replay-guides"))
+            ? "has replay-guides/"
+            : undefined,
         full: d.full,
       }));
       // The sandbox being resumed is almost always the one you want — pin it first.
       items.sort((a, b) => (a.description ? -1 : 0) - (b.description ? -1 : 0));
       items.push({
         label: "$(file-code) No sandbox — self-contained guide",
-        detail: "A guide with embedded Before/After bytes (workspace replay-guides/ or humanReplay.guidePath)",
+        detail: "A guide with embedded Before/After bytes (workspace session/replay-guide.md, replay-guides/, or humanReplay.guidePath)",
       });
       const sandboxPick = await vscode.window.showQuickPick(items, {
         title: "Human Replay: replay from which sandbox?",
@@ -431,11 +439,15 @@ export function activate(context: vscode.ExtensionContext) {
       guideRunner.setSandboxRoot(sandboxPick.full);
       output.appendLine(`[replay] sandbox: ${sandboxPick.full ?? "(none — self-contained guide)"}`);
 
-      // The guide lives with the sandbox (the generator writes it there). Fall back
-      // to the workspace's replay-guides/ or humanReplay.guidePath for hand-authored
-      // guides kept elsewhere; the no-sandbox pick goes straight to those.
+      // The guide lives with the sandbox (the generator writes it there):
+      // session/replay-guide.md, with the legacy replay-guides/ folder as the
+      // fallback for older sandboxes. Then the workspace's own locations or
+      // humanReplay.guidePath for hand-authored guides kept elsewhere; the
+      // no-sandbox pick goes straight to those.
       const sandboxGuides = ((): vscode.Uri[] => {
         if (!sandboxPick.full) return [];
+        const sessionGuide = path.join(sandboxPick.full, "session", "replay-guide.md");
+        if (fs.existsSync(sessionGuide)) return [vscode.Uri.file(sessionGuide)];
         const dir = path.join(sandboxPick.full, "replay-guides");
         try {
           return fs
@@ -450,8 +462,8 @@ export function activate(context: vscode.ExtensionContext) {
       if (guides.length === 0) {
         vscode.window.showWarningMessage(
           sandboxPick.full
-            ? `Human Replay: no guide in ${sandboxPick.full}/replay-guides/ and none in the workspace. Generate one, or set humanReplay.guidePath.`
-            : "Human Replay: no replay guide found. Add one under replay-guides/ or set humanReplay.guidePath.",
+            ? `Human Replay: no guide at ${sandboxPick.full}/session/replay-guide.md (or legacy replay-guides/) and none in the workspace. Generate one, or set humanReplay.guidePath.`
+            : "Human Replay: no replay guide found. Add one at session/replay-guide.md or set humanReplay.guidePath.",
         );
         return;
       }

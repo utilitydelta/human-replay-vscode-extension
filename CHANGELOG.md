@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0
+
+Guide discovery follows the new sandbox convention: `session/replay-guide.md`.
+
+- The sandbox lookup, the workspace scan, and the sandbox picker all look for
+  `session/replay-guide.md` first; the legacy `replay-guides/*.md` folder still
+  works as a fallback, so older sandboxes replay unchanged.
+- `humanReplay.guidePath` is untouched and still wins when set.
+
 ## 0.2.1
 
 Docs-only release: rewrote the README so the Marketplace listing carries it.
