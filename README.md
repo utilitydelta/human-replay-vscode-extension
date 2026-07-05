@@ -26,3 +26,10 @@ and CSS.
 The main replay process doesn't use any LLMs. Includes autocomplete for when you need to get your hands dirty! use "Toggle Autocomplete" - pick from 1.5B or 7B local models. 
 
 Feedback welcome.
+
+## Adjacent work
+
+- [human-replay](https://github.com/utilitydelta/human-replay) - sandbox prep, replay-guide generation, and the VS Code replay extension. The method's prep and replay stages.
+- [build-method](https://github.com/utilitydelta/build-method) - the full agentic system as a set of claude `SKILL.md` files that I use with human-replay.
+- [debate-battle](https://github.com/utilitydelta/debate-battle) - the multi-agent debate engine the scout runs goals through.
+- [react-mobx-mvvm](https://github.com/utilitydelta/react-mobx-mvvm) - my opinionated take at how to build front end with agents using MVVM.
