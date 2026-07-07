@@ -2,7 +2,7 @@
   "name": "human-replay",
   "displayName": "Human Replay",
   "description": "Replay sandboxed AI work into your real branch one Tab at a time. Guide-driven, model-free replay; local FIM autocomplete on the side.",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "publisher": "utilitydelta",
   "license": "Apache-2.0",
   "icon": "media/icon.png",
@@ -149,6 +149,11 @@
         "command": "humanReplay.diffReplayNudge",
         "key": "tab",
         "when": "editorTextFocus && humanReplay.diffReplayActive && !humanReplay.diffDecorationActive && !suggestWidgetVisible && !inlineSuggestionVisible"
+      },
+      {
+        "command": "humanReplay.runNextStep",
+        "key": "tab",
+        "when": "editorTextFocus && humanReplay.patchPauseActive && !suggestWidgetVisible && !inlineSuggestionVisible"
       },
       {
         "command": "humanReplay.cancelDisclosure",

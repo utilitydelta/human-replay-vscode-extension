@@ -298,6 +298,13 @@ export function activate(context: vscode.ExtensionContext) {
     updateGuideStatus();
     persistPosition(); // every done/skip lands in workspaceState — a reload resumes here
     void vscode.commands.executeCommand("setContext", "humanReplay.guideLoaded", guideRunner.loaded);
+    // While the replay waits before an auto-run Patch step no engine surface is
+    // armed, so without this context Tab would fall through to the editor's
+    // indent — the stray-indent corruption, on the human's own line. The key
+    // lets Tab arm the paused patch instead (the same runNextStep the status
+    // bar click runs); arming only discloses hunk 1, so the "see the strike
+    // before it lands" gate the pause exists for stays intact.
+    void vscode.commands.executeCommand("setContext", "humanReplay.patchPauseActive", guideRunner.pausedPatchInfo !== undefined);
   });
   // A re-anchored continue that can't place the next node marks the in-flight step
   // blocked — the panel shows amber and the human decides. Both engines surface the
