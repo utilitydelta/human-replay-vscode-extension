@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.1
+
+Re-release of 0.4.0 so the Windows Marketplace package catches up. The 0.4.0 run
+published the macOS and Linux packages, then the gallery timed out on Windows and
+left it a version behind. No code changes from 0.4.0.
+
+- The publish workflow now retries a timed-out upload with backoff and treats an
+  already-published version as done, so one stuck platform no longer strands the
+  rest and a partial failure self-heals on the next run.
+
 ## 0.4.0
 
 Retrospective surfacing stops burying the code. Before, a Patch step anchored

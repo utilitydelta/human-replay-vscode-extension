@@ -88,11 +88,39 @@ jobs:
       - name: Publish to Marketplace
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        shell: bash
         run: |
           if [ -z "$VSCE_PAT" ]; then
             echo "VSCE_PAT not set — skipping Marketplace publish (GitHub Release only)"
             exit 0
           fi
+          # Each platform publishes on its own so a stuck upload never strands the
+          # rest, and a re-run skips what already shipped. The gallery times out
+          # under load (it stranded win32-x64 on the 0.4.0 run) — a transient
+          # failure, so retry with backoff. A duplicate version is what a re-run
+          # of a partial failure sees: treat it as done, not an error. Any
+          # platform still unpublished after retries fails the step, so a real
+          # problem stays loud.
+          fail=0
           for f in vsix/*.vsix; do
-            npx @vscode/vsce publish --packagePath "$f" -p "$VSCE_PAT"
+            published=0
+            for attempt in 1 2 3; do
+              if out=$(npx @vscode/vsce publish --packagePath "$f" -p "$VSCE_PAT" 2>&1); then
+                echo "$out"; published=1; break
+              fi
+              echo "$out"
+              if echo "$out" | grep -qiE "already exists|already published|409"; then
+                echo "$f: this version is already on the Marketplace — skipping"
+                published=1; break
+              fi
+              if [ "$attempt" -lt 3 ]; then
+                echo "$f: publish attempt $attempt failed — retrying in $((attempt * 30))s"
+                sleep $((attempt * 30))
+              fi
+            done
+            if [ "$published" -ne 1 ]; then
+              echo "$f: publish failed after 3 attempts"
+              fail=1
+            fi
           done
+          exit $fail
