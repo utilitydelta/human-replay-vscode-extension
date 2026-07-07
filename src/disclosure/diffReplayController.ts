@@ -9,6 +9,15 @@ import { Retrospective } from "../retrospective/retrospective";
 
 const SETTLE_MS = 450; // wait for the human's typing to settle before re-anchoring
 
+// Line span of a hunk's text — for the patch-grain evidence line, so a coarse
+// hunk stays visible in the output channel rather than hiding as one healthy step.
+// A single trailing newline terminates the last line, it does not open a new one.
+function countLines(text: string): number {
+  if (text === "") return 0;
+  const body = text.endsWith("\n") ? text.slice(0, -1) : text;
+  return body === "" ? 1 : body.split("\n").length;
+}
+
 // Drives diff-replay — the edit-aware walk — over the native inline-completion
 // surface. Where the insert walk (controller.ts) only opens new lines, this
 // replays a diff: each step is a same-line replace or delete, served as a ghost
@@ -293,9 +302,13 @@ export class DiffReplayController {
       (a, s) => ((a[this.surfaceOf(s)] = (a[this.surfaceOf(s)] ?? 0) + 1), a),
       {} as Record<string, number>,
     );
+    const maxHunkLines = lineMode
+      ? steps.reduce((mx, s) => Math.max(mx, countLines(s.originalText ?? ""), countLines(s.replacement)), 0)
+      : 0;
     this.output.appendLine(
       `[diff-replay] start${dramatic ? " (dramatic)" : ""}: ${steps.length} steps ` +
-        `(${tally.replace ?? 0} replace, ${tally.insert ?? 0} insert, ${tally.block ?? 0} block)`,
+        `(${tally.replace ?? 0} replace, ${tally.insert ?? 0} insert, ${tally.block ?? 0} block)` +
+        (lineMode ? `, widest hunk ${maxHunkLines} line(s)` : ""),
     );
     this.renderCurrent(editor);
   }
