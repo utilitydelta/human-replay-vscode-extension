@@ -269,6 +269,18 @@ export function activate(context: vscode.ExtensionContext) {
       guideStatus.show();
       return;
     }
+    // Same treatment for the patch pause: momentum stopped before a whole-file
+    // reconcile, and the human must know what it strikes before arming it.
+    const patch = guideRunner.pausedPatchInfo;
+    if (patch && !done) {
+      guideStatus.text = `$(diff) patch of ${patch.rel.split("/").pop()} waiting — click to review`;
+      guideStatus.tooltip =
+        `The next step reconciles ${patch.rel} with the sandbox: ${patch.detail}. ` +
+        `Struck lines can include your own edits — Tab lands the sandbox's bytes, Shift+Esc keeps yours. Click to arm the hunks.`;
+      guideStatus.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
+      guideStatus.show();
+      return;
+    }
     guideStatus.backgroundColor = undefined;
     guideStatus.text = done
       ? `$(check) Replay: ${guideRunner.feature} ${total}/${total}`

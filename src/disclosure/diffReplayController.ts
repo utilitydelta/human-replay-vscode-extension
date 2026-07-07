@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { buildReplaySteps, asInsertion, ReplayStep } from "./sequence";
-import { lineDiffSteps, changedLineSpan } from "./lineDiff";
+import { lineDiffSteps, changedLineSpan, countLines } from "./lineDiff";
 import { resolveStep, resolveStepNoTree, shiftWindow } from "./replay";
 import { parseRoot } from "./diff";
 import { LanguageSpec, RUST } from "./language";
@@ -8,15 +8,6 @@ import { revealCursor } from "./reveal";
 import { Retrospective } from "../retrospective/retrospective";
 
 const SETTLE_MS = 450; // wait for the human's typing to settle before re-anchoring
-
-// Line span of a hunk's text — for the patch-grain evidence line, so a coarse
-// hunk stays visible in the output channel rather than hiding as one healthy step.
-// A single trailing newline terminates the last line, it does not open a new one.
-function countLines(text: string): number {
-  if (text === "") return 0;
-  const body = text.endsWith("\n") ? text.slice(0, -1) : text;
-  return body === "" ? 1 : body.split("\n").length;
-}
 
 // Drives diff-replay — the edit-aware walk — over the native inline-completion
 // surface. Where the insert walk (controller.ts) only opens new lines, this
@@ -138,8 +129,8 @@ export class DiffReplayController {
       this.gestures.hide();
       return;
     }
-    this.gestures.text = `$(diff) hunk ${s.index + 1}/${s.steps.length} — Tab applies · Shift+Esc skips`;
-    this.gestures.tooltip = "Tab lands this hunk's sandbox bytes; Shift+Esc keeps yours and moves on; Esc cancels the step";
+    this.gestures.text = `$(diff) hunk ${s.index + 1}/${s.steps.length} — Tab lands sandbox · Shift+Esc keeps yours`;
+    this.gestures.tooltip = "Tab replaces the struck lines with the sandbox's bytes; Shift+Esc keeps your lines and moves on; Esc cancels the step";
     this.gestures.show();
   }
 
@@ -680,12 +671,18 @@ export class DiffReplayController {
     this.session!.lastServed = { range, text };
     editor.setDecorations(this.doomed, [range]);
     // contentText can't draw newlines: a block previews its first incoming line
-    // and says how much more Tab will land.
+    // and says how much more Tab will land. The hint must say whose bytes die —
+    // the struck range is live code, possibly the human's own edits, and a bare
+    // "Tab applies" reads as safe right up until it deletes them.
+    const struck = Math.max(1, range.end.line - range.start.line + (range.end.character > 0 ? 1 : 0));
+    const struckN = `${struck} struck line${struck === 1 ? "" : "s"}`;
     const lines = text.split("\n");
     const hint =
-      lines.length > 1
-        ? `  ⟶  ${lines[0].trim()} … (+${lines.length - 1} more line${lines.length > 2 ? "s" : ""} — Tab applies · Shift+Esc skips)`
-        : `  ⟶  ${text}   (Tab · Shift+Esc skips)`;
+      text === ""
+        ? `  ⟶  Tab removes the ${struckN} · Shift+Esc keeps them`
+        : lines.length > 1
+          ? `  ⟶  ${lines[0].trim()} … (+${lines.length - 1} more — Tab replaces the ${struckN} · Shift+Esc keeps yours)`
+          : `  ⟶  ${text}   (Tab replaces this line · Shift+Esc keeps yours)`;
     // Anchor the hint at the end of the range's FIRST line. An `after`
     // attachment renders at the range end, and a multi-line hunk's range ends
     // past its trailing newline — the hint would land on the next content

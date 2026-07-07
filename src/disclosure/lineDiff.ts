@@ -188,6 +188,29 @@ export function lineDiffSteps(oldText: string, newText: string): ReplayStep[] {
   }));
 }
 
+/** Line count of a hunk's text. A single trailing newline terminates the last
+ *  line, it does not open a new one. */
+export function countLines(text: string): number {
+  if (text === "") return 0;
+  const body = text.endsWith("\n") ? text.slice(0, -1) : text;
+  return body === "" ? 1 : body.split("\n").length;
+}
+
+/**
+ * What a patch of `oldText` → `newText` would do — the numbers the runner shows
+ * BEFORE arming the hunks, so the human ratifies a whole-file reconcile knowing
+ * how much live code it strikes (the struck side may be their own mid-replay
+ * edits). Same lineDiffSteps both the summary and the session use, so the
+ * numbers can't drift from what Tab actually does.
+ */
+export function patchSummary(oldText: string, newText: string): { hunks: number; struckLines: number } {
+  const steps = lineDiffSteps(oldText, newText);
+  return {
+    hunks: steps.length,
+    struckLines: steps.reduce((n, s) => n + countLines(s.originalText ?? ""), 0),
+  };
+}
+
 /**
  * The byte span in `newText` that bounds every line changed from `oldText` — the
  * block a Patch step actually touches. Trims the common line prefix and suffix;

@@ -23,7 +23,7 @@ const bundle = path.join(__dirname, ".line-patch.bundle.cjs");
 const entry = path.join(__dirname, ".line-patch.entry.ts");
 fs.writeFileSync(
   entry,
-  `export { lineDiffSteps } from "../src/disclosure/lineDiff";\n` +
+  `export { lineDiffSteps, patchSummary } from "../src/disclosure/lineDiff";\n` +
     `export { resolveStepNoTree } from "../src/disclosure/replay";\n` +
     `export { parseGuide } from "../src/disclosure/guide";\n`,
 );
@@ -35,7 +35,7 @@ esbuild.buildSync({
   platform: "node",
   external: ["tree-sitter", "tree-sitter-rust", "tree-sitter-c-sharp", "tree-sitter-typescript", "tree-sitter-python", "@tree-sitter-grammars/tree-sitter-markdown", "tree-sitter-html", "tree-sitter-css"],
 });
-const { lineDiffSteps, resolveStepNoTree, parseGuide } = require(bundle);
+const { lineDiffSteps, patchSummary, resolveStepNoTree, parseGuide } = require(bundle);
 test.after(() => {
   fs.rmSync(bundle, { force: true });
   fs.rmSync(entry, { force: true });
@@ -122,6 +122,24 @@ test("pathological middle falls back to one block swap — still byte-exact", ()
   assert.strictEqual(steps.length, 1, "over-budget middle collapses to one block");
   assert.strictEqual(replayHunks(oldText, steps), newText);
 });
+
+// The pause summary the runner shows before arming a patch: hunk count plus the
+// live lines those hunks strike. Hand-pinned shapes — an insert strikes nothing,
+// a replace strikes what it swaps out, a delete strikes what it removes — so the
+// warning the human ratifies can never claim more or less than Tab would do.
+const SUMMARY_CASES = [
+  { name: "identical files: nothing to reconcile", old: "a\nb\n", new: "a\nb\n", hunks: 0, struckLines: 0 },
+  { name: "pure insert strikes no live lines", old: "a\nc\n", new: "a\nb\nc\n", hunks: 1, struckLines: 0 },
+  { name: "one-line replace strikes one", old: "a\nb\nc\n", new: "a\nX\nc\n", hunks: 1, struckLines: 1 },
+  { name: "two-line delete strikes two", old: "a\nb\nc\nd\n", new: "a\nd\n", hunks: 1, struckLines: 2 },
+  { name: "replace + delete tally independently", old: "a\nb\nc\nd\ne\n", new: "a\nX\nc\ne\n", hunks: 2, struckLines: 2 },
+];
+
+for (const c of SUMMARY_CASES) {
+  test(`patch summary counts what Tab would strike — ${c.name}`, () => {
+    assert.deepStrictEqual(patchSummary(c.old, c.new), { hunks: c.hunks, struckLines: c.struckLines });
+  });
+}
 
 test("guide parser: a Patch step parses with File only, symbol defaults to the file", () => {
   const g = parseGuide(

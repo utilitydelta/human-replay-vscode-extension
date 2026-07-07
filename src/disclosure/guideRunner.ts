@@ -8,6 +8,7 @@ import { parseRoot } from "./diff";
 import { findItemByName, leadingTriviaStart, walkableSource, SyntaxNode } from "./walk";
 import { planCreateInsertion, separatorToInsert, splitLeadingPad } from "./insertion";
 import { FileSegment, planFileWalk, resumeIndex, splitTrailing } from "./fileWalk";
+import { patchSummary } from "./lineDiff";
 import { Retrospective } from "../retrospective/retrospective";
 import { ProgramCounter, StepStatus } from "./programCounter";
 import { extractSymbol, stepAlreadyLanded } from "./resume";
@@ -47,6 +48,11 @@ export class GuideRunner {
   // The status bar renders it as a persistent "click to continue" so the pause
   // survives the toast (which auto-dismisses while the human reviews).
   private pausedBefore: string | undefined;
+  // Set while the replay waits before an auto-run Patch step. A whole-file
+  // reconcile strikes live bytes — often the human's own mid-replay edits — so
+  // momentum never arms one; it pops in as this pause instead, and an explicit
+  // run is the ratifying gesture (the human decides, invariant 4).
+  private pausedPatch: { index: number; rel: string; detail: string } | undefined;
   // A create-file step's walk in flight: the segment plan and the position in
   // it. Each segment is one engine run (walk or block ghost); completeCurrent
   // chains the next until the plan is spent, then the step itself completes.
@@ -82,6 +88,7 @@ export class GuideRunner {
    *  mark that leaves the human staring at a stuck strike. */
   skip(i: number): void {
     const wasInFlight = this.pc.inFlightIndex === i;
+    if (this.pausedPatch?.index === i) this.pausedPatch = undefined;
     this.pc.skip(i);
     if (wasInFlight) {
       this.disclosure.cancel();
@@ -242,8 +249,56 @@ export class GuideRunner {
         });
       return;
     }
+    if (to?.action === "patch") {
+      this.pauseBeforePatch(next, to);
+      return;
+    }
     this.output.appendLine(`[guide] flowing into step ${to?.id ?? next}`);
     void this.runStep(next, () => {});
+  }
+
+  // Momentum stops at a Patch step the way it stops at a phase boundary. Its
+  // hunks strike whatever the live file holds that the sandbox doesn't — which
+  // includes the human's own hacks — and a whole-file-red strike popping in
+  // uninvited reads as data loss. Say up front what the patch would strike
+  // (same lineDiffSteps the session will serve, so the numbers are the ground
+  // truth) and wait for an explicit run. A patch with nothing to reconcile
+  // skips the ceremony: running it just marks the step done and flows on.
+  private pauseBeforePatch(index: number, step: ReplayStep): void {
+    const rel = step.file.split(":")[0];
+    const live = this.readLiveFile(rel);
+    const sandbox = this.readSandboxFile(step);
+    if (live !== undefined && sandbox !== undefined && live === sandbox) {
+      void this.runStep(index, () => {});
+      return;
+    }
+    const summary = live !== undefined && sandbox !== undefined ? patchSummary(live, sandbox) : undefined;
+    const detail = summary
+      ? `${summary.hunks} hunk(s), striking ${summary.struckLines} live line(s)`
+      : "live or sandbox bytes unreadable — running it will surface why";
+    this.pausedPatch = { index, rel, detail };
+    this.changed();
+    this.output.appendLine(`[guide] paused before patch step ${step.id}: ${rel} — ${detail}`);
+    void vscode.window
+      .showInformationMessage(
+        `Human Replay: next is a patch of ${rel} — ${detail}. Struck lines can include your own edits; Shift+Esc keeps a hunk's live bytes.`,
+        "Review hunks",
+        "Skip step",
+      )
+      .then((choice) => {
+        if (choice === "Review hunks") void this.runStep(index, () => {});
+        else if (choice === "Skip step") this.skip(index);
+      });
+  }
+
+  // The step's file as the human sees it: the open (possibly dirty) buffer
+  // beats disk — symbol steps save late, and the pause summary must count the
+  // bytes the hunks will actually strike.
+  private readLiveFile(rel: string): string | undefined {
+    const open = vscode.workspace.textDocuments.find((d) => d.uri.fsPath.endsWith(rel));
+    if (open) return open.getText();
+    const ws = vscode.workspace.workspaceFolders?.[0];
+    return ws ? this.readFileFromDisk(path.join(ws.uri.fsPath, rel)) : undefined;
   }
 
   get loaded(): boolean {
@@ -272,6 +327,12 @@ export class GuideRunner {
     return this.pausedBefore;
   }
 
+  /** What the pending Patch step would strike, while the replay waits for the
+   *  human to enter it. */
+  get pausedPatchInfo(): { rel: string; detail: string } | undefined {
+    return this.pausedPatch;
+  }
+
   /** Re-derive every step's status from the bytes on disk — the gesture after
    *  a rollback. Done marks are recomputed from ground truth (a reverted
    *  symbol falls back to pending); skips survive (human intent bytes can't
@@ -282,6 +343,7 @@ export class GuideRunner {
     this.pc.reset(this.steps.length);
     for (const i of skipped) this.pc.skip(i);
     this.pausedBefore = undefined;
+    this.pausedPatch = undefined;
     const landed = this.deriveLanded(workspaceRoot);
     this.changed();
     this.output.appendLine(`[guide] resynced from files — ${landed} step(s) read as landed, ${skipped.length} skip(s) kept`);
@@ -294,6 +356,7 @@ export class GuideRunner {
   unload(): void {
     this.fileWalk = undefined;
     this.pausedBefore = undefined;
+    this.pausedPatch = undefined;
     this.guide = undefined;
     this.sessionSandboxRoot = undefined;
     this.pc.reset(0);
@@ -787,6 +850,12 @@ export class GuideRunner {
       // Leaving the phase: clear the phase's retrospectives so the human enters
       // the next one on a clean slate, not staring at the last phase's squiggles.
       this.clearAllDiagnostics?.();
+      this.changed();
+    }
+    if (this.pausedPatch !== undefined) {
+      // Any run ratifies the patch pause too — but mid-phase, so the phase's
+      // retrospectives stay up.
+      this.pausedPatch = undefined;
       this.changed();
     }
     // A manual run while a step is mid-flight replaces it — tear the live
