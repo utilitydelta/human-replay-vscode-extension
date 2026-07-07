@@ -83,8 +83,8 @@ export function activate(context: vscode.ExtensionContext) {
     const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === done.uri.toString());
     if (!doc) return;
     const range = new vscode.Range(
-      doc.positionAt(done.anchorOffset),
-      doc.positionAt(done.anchorOffset + done.symbolLen),
+      doc.positionAt(done.retroOffset),
+      doc.positionAt(done.retroOffset + done.retroLen),
     );
     surfaceRetrospective(doc, range, done.retrospective, retrospectives, output);
   });
@@ -241,6 +241,9 @@ export function activate(context: vscode.ExtensionContext) {
   // diff-replay, delete→strike). Model-free: the route is read from the guide, the
   // bytes are the guide's real sandbox bytes. The program counter is the position.
   const clearGate = (doc: vscode.TextDocument) => retrospectives.delete(doc.uri);
+  // A phase boundary wipes the whole collection: the previous phase's squiggles
+  // and invariants, across every file it touched, retire when the human moves on.
+  guideRunner.setDiagnosticClearer(() => retrospectives.clear());
 
   // Program-counter indicator: the replay's position, always visible while a guide
   // is loaded. Click to run the next step.

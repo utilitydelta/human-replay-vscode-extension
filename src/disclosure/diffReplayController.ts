@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { buildReplaySteps, asInsertion, ReplayStep } from "./sequence";
-import { lineDiffSteps } from "./lineDiff";
+import { lineDiffSteps, changedLineSpan } from "./lineDiff";
 import { resolveStep, resolveStepNoTree, shiftWindow } from "./replay";
 import { parseRoot } from "./diff";
 import { LanguageSpec, RUST } from "./language";
@@ -42,6 +42,12 @@ interface Session {
   index: number;
   spec: LanguageSpec;
   retrospective?: Retrospective;
+  // Where the retrospective anchors when the walk completes — the block the
+  // human just replayed, in final-document coordinates. For a symbol swap that
+  // is the symbol; for a Patch step (whole file) it is only the changed lines,
+  // so the retrospective squiggle never spans code the step never touched.
+  retroOffset: number;
+  retroLen: number;
   lastServed?: { range: vscode.Range; text: string };
   // "dramatic" renders the change as a visual diff (old struck red, new ghosted
   // green) via decorations + a Tab keybinding, instead of the native ghost. Same
@@ -70,7 +76,7 @@ type ResolveResult =
 
 export class DiffReplayController {
   private session: Session | undefined;
-  private onComplete?: (s: { uri: vscode.Uri; anchorOffset: number; symbolLen: number; retrospective?: Retrospective }) => void;
+  private onComplete?: (s: { uri: vscode.Uri; retroOffset: number; retroLen: number; retrospective?: Retrospective }) => void;
   private onCollision?: () => void;
   private lastAcceptAt: number | undefined;
   // The human authored mid-replay (re-anchoring engaged). `typing` is true between a
@@ -270,7 +276,13 @@ export class DiffReplayController {
     if (!inPlace) await editor.edit((b) => b.insert(at, oldSrc));
     const anchorOffset = editor.document.offsetAt(at);
     const steps = lineMode ? lineDiffSteps(oldSrc, newSrc) : buildReplaySteps(oldSrc, newSrc, spec);
-    this.session = { uri: editor.document.uri, anchorOffset, symbolLen: oldSrc.length, selfDelta: 0, steps, index: 0, retrospective, dramatic, spec, lineMode };
+    // A symbol swap anchors the retrospective on the whole symbol (it IS the
+    // block). A Patch step spans the whole file, so anchor on the changed lines
+    // only — a whole-file squiggle buries the code the human is reading.
+    const span = lineMode ? changedLineSpan(oldSrc, newSrc) : undefined;
+    const retroOffset = span ? anchorOffset + span.offset : anchorOffset;
+    const retroLen = span ? span.len : newSrc.length || oldSrc.length;
+    this.session = { uri: editor.document.uri, anchorOffset, symbolLen: oldSrc.length, selfDelta: 0, steps, index: 0, retrospective, dramatic, spec, lineMode, retroOffset, retroLen };
     void vscode.commands.executeCommand("setContext", ACTIVE_CONTEXT, true);
     this.lastAcceptAt = undefined;
     this.diverged = false;
@@ -776,7 +788,7 @@ export class DiffReplayController {
     void vscode.commands.executeCommand("setContext", DECORATION_CONTEXT, false);
     void vscode.commands.executeCommand("setContext", ACTIVE_CONTEXT, false);
     this.output.appendLine(`[diff-replay] complete (${s.steps.length} steps)`);
-    const done = { uri: s.uri, anchorOffset: s.anchorOffset, symbolLen: s.symbolLen, retrospective: s.retrospective };
+    const done = { uri: s.uri, retroOffset: s.retroOffset, retroLen: s.retroLen, retrospective: s.retrospective };
     this.session = undefined;
     this.onComplete?.(done);
   }

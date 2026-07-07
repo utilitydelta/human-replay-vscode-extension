@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.0
+
+Retrospective surfacing stops burying the code. Before, a Patch step anchored
+its retrospective over the whole file, so the entire buffer went blue and there
+was no way to clear it. Now the marker sits on the block being replayed.
+
+- The retrospective squiggle covers only the block that step touched: the symbol
+  for a symbol swap, the changed lines for a Patch step. A symbol swap also
+  anchors on the new symbol length, so a length-changing modify marks the right
+  span.
+- Crossing a phase boundary clears the previous phase's retrospectives and
+  invariants across every file it touched. Markers still persist within a phase
+  so you can review it, then the slate wipes when you continue.
+- Severity stays Information: the marker is still navigable from the Problems
+  panel with F8, now without washing the whole file.
+
 ## 0.3.0
 
 Guide discovery follows the new sandbox convention: `session/replay-guide.md`.

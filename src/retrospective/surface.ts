@@ -2,11 +2,13 @@ import * as vscode from "vscode";
 import { Retrospective, isWeak } from "./retrospective";
 
 // Surface a step's retrospective when its disclosure completes. Native, non-
-// alarming: a Hint diagnostic on the symbol (navigable with F8, lives in the
-// Problems panel) carrying the question and every invariant the step touches as
-// related information, plus one dismissible nudge so the human actually sits with
-// it. A weak question (smell) escalates the message; the invariants gate either
-// way. No model on this path.
+// alarming: an Information diagnostic on the replayed block (navigable with F8,
+// lives in the Problems panel) carrying the question and every invariant the
+// step touches as related information, plus one dismissible nudge so the human
+// actually sits with it. The block is the symbol for a symbol swap and only the
+// changed lines for a Patch step, so the squiggle never spans untouched code. A
+// weak question (smell) escalates the message; the invariants gate either way.
+// No model on this path.
 export function surfaceRetrospective(
   document: vscode.TextDocument,
   range: vscode.Range,

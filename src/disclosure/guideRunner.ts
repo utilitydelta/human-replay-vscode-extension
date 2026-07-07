@@ -35,6 +35,10 @@ export class GuideRunner {
   private guide: ReplayGuide | undefined;
   private readonly pc = new ProgramCounter();
   private onChange?: () => void; // fired when state changes, so the panel refreshes
+  // Wipes every retrospective diagnostic across all files. Called when the human
+  // leaves a phase, so the last phase's squiggles and invariants don't bleed into
+  // the next — each phase reviews its own, then the slate clears.
+  private clearAllDiagnostics?: () => void;
   // The sandbox this session replays from. Set by the Start Replay picker; the
   // humanReplay.sandboxRoot config is the fallback so a hand-configured run
   // still works.
@@ -58,6 +62,10 @@ export class GuideRunner {
 
   setChangeHandler(handler: () => void): void {
     this.onChange = handler;
+  }
+  /** How the runner wipes every retrospective diagnostic when a phase ends. */
+  setDiagnosticClearer(clear: () => void): void {
+    this.clearAllDiagnostics = clear;
   }
   private changed(): void {
     this.onChange?.();
@@ -776,6 +784,9 @@ export class GuideRunner {
     }
     if (this.pausedBefore !== undefined) {
       this.pausedBefore = undefined; // any run is the continue gesture
+      // Leaving the phase: clear the phase's retrospectives so the human enters
+      // the next one on a clean slate, not staring at the last phase's squiggles.
+      this.clearAllDiagnostics?.();
       this.changed();
     }
     // A manual run while a step is mid-flight replaces it — tear the live

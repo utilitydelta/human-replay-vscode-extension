@@ -110,3 +110,27 @@ export function lineDiffSteps(oldText: string, newText: string): ReplayStep[] {
     originalText: op.oldText,
   }));
 }
+
+/**
+ * The byte span in `newText` that bounds every line changed from `oldText` — the
+ * block a Patch step actually touches. Trims the common line prefix and suffix;
+ * what remains, expanded to whole lines, is the changed region. Returns
+ * undefined when the texts are identical. A retrospective anchors on this span
+ * instead of the whole file, so the squiggle sits on the change, not the code
+ * around it.
+ */
+export function changedLineSpan(oldText: string, newText: string): { offset: number; len: number } | undefined {
+  if (oldText === newText) return undefined;
+  const a = splitLines(oldText);
+  const b = splitLines(newText);
+  let pre = 0;
+  while (pre < a.length && pre < b.length && a[pre] === b[pre]) pre++;
+  let post = 0;
+  while (post < a.length - pre && post < b.length - pre && a[a.length - 1 - post] === b[b.length - 1 - post]) post++;
+  const bStarts: number[] = new Array(b.length + 1);
+  bStarts[0] = 0;
+  for (let i = 0; i < b.length; i++) bStarts[i + 1] = bStarts[i] + b[i].length;
+  const offset = bStarts[pre];
+  const end = bStarts[b.length - post];
+  return { offset, len: Math.max(0, end - offset) };
+}
