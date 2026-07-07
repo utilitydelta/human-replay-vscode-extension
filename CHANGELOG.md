@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.0
+
+Patch steps and create-file walks stop collapsing. A large or scattered Patch used
+to land as one whole-file replace you Tabbed through unread, and a create-file walk
+stalled on a member's multi-line doc comment. Both now disclose at the grain the
+replay is for.
+
+- A Patch step's line diff stays granular on large files. Above the old cell cap
+  the diff fell back to a single file-sized replace; it now runs a linear-space
+  pass that keeps the hunks tracking the real changed lines, so a scattered patch
+  replays as scattered edits, not one block. An enormous mostly-rewritten middle
+  still takes a deliberate coarse block rather than freezing the UI, and the widest
+  hunk is logged so a coarse patch stays visible.
+- A container member's leading doc comment or attribute discloses as one block with
+  the member. It used to disclose line by line and stall, because adjacent comment
+  lines repositioned the cursor onto itself and the next ghost never armed. The
+  trivia now rides the member's step and Tab commits the block in one gesture.
+
 ## 0.4.1
 
 Re-release of 0.4.0 so the Windows Marketplace package catches up. The 0.4.0 run
