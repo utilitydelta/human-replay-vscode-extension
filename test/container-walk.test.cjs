@@ -166,6 +166,45 @@ test("recovery bareText: the first step carries its leading trivia", () => {
   assert.ok(!steps[1].bareText.startsWith("//"), "later steps carry only their own bytes");
 });
 
+test("a container member's multi-line doc comment folds into the member, not separate leaf steps", () => {
+  // The stall bug: `///` lines are named children of the impl body, so each
+  // disclosed as its own leaf step. Adjacent leaves reposition the caret onto
+  // the spot VS Code already parked it, no selection change fires, and the walk
+  // stalls mid-comment. The fix folds a member's leading trivia into the member.
+  const src = `impl CaptureToFollowerClient {\n    /// Data-bearing calls only. Post-burst commit-notify sends ride with empty\n    /// batches and are wire-legal; they stay recorded in \`calls\` but do not\n    /// count as replication cycles.\n    fn data_calls(&self) -> Vec<(Vec<ReplicationBatchItem>, u64)> {\n        self.calls.borrow().clone()\n    }\n}`;
+  const steps = computeSteps(src, RUST);
+  assert.strictEqual(replay(steps), src, "must replay byte-exact");
+  // No step is a bare doc-comment: the comment rides the fn's step.
+  const commentOnly = steps.filter((s) => s.insert.trim() !== "" && s.insert.trim().split("\n").every((l) => l.trim().startsWith("///")));
+  assert.strictEqual(commentOnly.length, 0, "doc-comment lines must not disclose as their own steps");
+  const fnStep = steps.find((s) => s.insert.includes("fn data_calls"));
+  assert.ok(fnStep, "the fn discloses as a step");
+  assert.ok(fnStep.insert.includes("/// Data-bearing calls only") && fnStep.insert.includes("/// count as replication cycles."), "the whole doc comment folds into the fn's step");
+  // The folded member's ghost must OPEN on the trivia's first non-space (`///`),
+  // never on the line indent: a ghost leading with indentation can't be
+  // Tab-committed, so it reads as divergence and the trivia is dropped. The shell
+  // lays the indent instead.
+  assert.ok(!/^[ \t]/.test(fnStep.insert), "the member ghost must not lead with indentation");
+  assert.ok(fnStep.insert.startsWith("///"), "the folded member ghost opens on the doc comment");
+  assert.ok(steps[0].insert.includes("{\n    \n}"), "the shell carries the member's line indent");
+  // No step leads with indentation anywhere in the walk (the Tab-commit gate).
+  for (const s of steps) assert.ok(!/^[ \t]/.test(s.insert), "no walk step ghost leads with indentation");
+  // Stall signature: a leaf whose cursor equals the next step's anchor (no-move reposition).
+  for (let i = 0; i < steps.length - 1; i++) {
+    if (steps[i].kind === "leaf")
+      assert.notStrictEqual(steps[i].cursorOffset, steps[i + 1].insertOffset, "no adjacent-leaf no-move reposition (the walk-stall signature)");
+  }
+});
+
+test("a member's attribute folds into the member (mod with a #[test] fn)", () => {
+  const src = `mod tests {\n    #[test]\n    fn it_works() {\n        assert!(true);\n    }\n}`;
+  const steps = computeSteps(src, RUST);
+  assert.strictEqual(replay(steps), src, "must replay byte-exact");
+  assert.strictEqual(steps.filter((s) => s.insert.trim() === "#[test]").length, 0, "#[test] must not disclose as its own step");
+  const fnStep = steps.find((s) => s.insert.includes("fn it_works"));
+  assert.ok(fnStep.insert.includes("#[test]"), "the attribute folds into the fn's step");
+});
+
 test("cleanWalkRegion: a dirty parse yields no verdict, a clean one yields the region", () => {
   // The human's own not-yet-valid code (a syntax the grammar doesn't know)
   // makes error recovery absorb it into neighboring nodes and poisons every

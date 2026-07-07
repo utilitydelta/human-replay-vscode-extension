@@ -245,6 +245,13 @@ export function computeSteps(src: string, spec: LanguageSpec = RUST): Step[] {
       .map((l, i) => (i === 0 ? l : l.replace(strip, "")))
       .join("\n");
   };
+  // A member is trivia (a doc comment or attribute, per the language) when every
+  // non-blank line it spans is a trivia line. Such members fold into the next
+  // real member's lead instead of disclosing as steps of their own.
+  const isTriviaNode = (node: SyntaxNode): boolean => {
+    const text = src.slice(node.startIndex, node.endIndex);
+    return text.split("\n").every((l) => l.trim() === "" || spec.isTriviaLine(l.trim()));
+  };
 
   // Emit `node`'s skeleton beginning at `pos`; `lead` is the source bytes
   // between the previous sibling and this node, folded into the step so the
@@ -263,19 +270,33 @@ export function computeSteps(src: string, spec: LanguageSpec = RUST): Step[] {
     const header = src.slice(d.node.startIndex, d.block.startIndex + 1); // ends with `{`
     // The recovery shell (no baked lead/blank line): `header {\n}`.
     const bareText = header + "\n}";
-    const kids = namedChildren(d.block);
+    // A member's leading trivia (doc comments, attributes) is not a disclosure
+    // step of its own — it is the member's lead, folded into the member's block
+    // exactly as top-level trivia rides the walk-start's prefix. Left as separate
+    // named children it discloses line by line and, being adjacent leaves, stalls
+    // the walk. The bytes still emit (via each member's lead / the first member's
+    // leadingTriviaStart), so the build stays byte-exact.
+    const kids = namedChildren(d.block).filter((k) => !isTriviaNode(k));
 
     if (kids.length === 0) {
-      // Empty body: the shell IS the node — emit its interior verbatim.
+      // Empty (or trivia-only) body: the shell IS the node — emit its interior verbatim.
       const body = lead + header + src.slice(d.block.startIndex + 1, d.block.endIndex);
       splice(pos, body);
       raw.push({ insert: body, insertPos: pos, kind: "container", parentKey, bareText, col: colOf(d.node.startIndex) });
       return pos + body.length;
     }
 
-    // Shape first: header, the source bytes up to where the first child will
-    // sit, and the source bytes that close the block after the last child.
-    const preFirst = src.slice(d.block.startIndex + 1, kids[0].startIndex);
+    // Shape first: header, the source bytes up to the first child's leading
+    // trivia, and the source bytes that close the block after the last child.
+    // The first child's trivia rides the child, not the shell — but its LINE
+    // indent stays in the shell (preFirst). leadingTriviaStart lands on the line
+    // start, so skip the indent to the trivia's first non-space: the member's
+    // ghost must open on `///`/`#[`, never on whitespace, or Tab can't commit it
+    // (VS Code gates the commit on the ghost's leading indentation).
+    let firstStart = leadingTriviaStart(src, kids[0].startIndex, spec);
+    while (firstStart < kids[0].startIndex && (src[firstStart] === " " || src[firstStart] === "\t")) firstStart++;
+    const preFirst = src.slice(d.block.startIndex + 1, firstStart);
+    const firstLead = src.slice(firstStart, kids[0].startIndex);
     const close = src.slice(kids[kids.length - 1].endIndex, d.block.endIndex);
     const body = lead + header + preFirst + close;
     splice(pos, body);
@@ -283,8 +304,10 @@ export function computeSteps(src: string, spec: LanguageSpec = RUST): Step[] {
 
     // This container's own key, for its children to re-anchor against.
     const childKey = src.slice(d.node.startIndex, d.block.startIndex).trim();
-    let cursor = emit(kids[0], pos + lead.length + header.length + preFirst.length, "", childKey);
+    let cursor = emit(kids[0], pos + lead.length + header.length + preFirst.length, firstLead, childKey);
     for (let i = 1; i < kids.length; i++) {
+      // The gap from the previous member's end spans any trivia before this one,
+      // so filtered trivia folds into this member's lead automatically.
       cursor = emit(kids[i], cursor, src.slice(kids[i - 1].endIndex, kids[i].startIndex), childKey);
     }
     return cursor + close.length;
