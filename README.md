@@ -23,7 +23,7 @@ There are some vscode settings, search for 'Human Replay' in there too.
 Rust, C#, TypeScript/JavaScript (tsx/jsx included), Python, Markdown, HTML,
 and CSS.
 
-The main replay process doesn't use any LLMs. Includes autocomplete for when you need to get your hands dirty! use "Toggle Autocomplete" - pick from 1.5B or 7B local models. 
+The replay process doesn't use any LLMs. Not one path, not one call. 
 
 Feedback welcome.
 

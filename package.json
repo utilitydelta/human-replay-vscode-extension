@@ -1,8 +1,8 @@
 {
   "name": "human-replay",
   "displayName": "Human Replay",
-  "description": "Replay sandboxed AI work into your real branch one Tab at a time. Guide-driven, model-free replay; local FIM autocomplete on the side.",
-  "version": "0.5.1",
+  "description": "Replay sandboxed AI work into your real branch one Tab at a time. Guide-driven and model-free.",
+  "version": "1.0.0",
   "publisher": "utilitydelta",
   "license": "Apache-2.0",
   "icon": "media/icon.png",
@@ -10,8 +10,7 @@
     "ai",
     "replay",
     "code review",
-    "tree-sitter",
-    "autocomplete"
+    "tree-sitter"
   ],
   "repository": {
     "type": "git",
@@ -21,7 +20,6 @@
     "vscode": "^1.85.0"
   },
   "categories": [
-    "Machine Learning",
     "Programming Languages"
   ],
   "main": "./dist/extension.js",
@@ -33,30 +31,6 @@
       {
         "command": "humanReplay.startReplay",
         "title": "Start Replay",
-        "category": "Human Replay"
-      },
-      {
-        "command": "humanReplay.toggle",
-        "title": "Toggle Autocomplete",
-        "category": "Human Replay"
-      },
-      {
-        "command": "humanReplay.comments.add",
-        "title": "Human Replay: Add Replay Note"
-      },
-      {
-        "command": "humanReplay.comments.pullPrompt",
-        "title": "Comments: Pull into Sandbox Prompt",
-        "category": "Human Replay"
-      },
-      {
-        "command": "humanReplay.comments.clear",
-        "title": "Comments: Clear All",
-        "category": "Human Replay"
-      },
-      {
-        "command": "humanReplay.comments.nextBlock",
-        "title": "Comments: Keep for Next Block",
         "category": "Human Replay"
       },
       {
@@ -82,16 +56,6 @@
       {
         "command": "humanReplay.runNextStep",
         "title": "Continue Replay (Next Step or Phase)",
-        "category": "Human Replay"
-      },
-      {
-        "command": "humanReplay.startOllama",
-        "title": "Autocomplete: Start the Local Model Server",
-        "category": "Human Replay"
-      },
-      {
-        "command": "humanReplay.chooseModel",
-        "title": "Autocomplete: Choose Model",
         "category": "Human Replay"
       },
       {
@@ -164,10 +128,6 @@
     "menus": {
       "commandPalette": [
         {
-          "command": "humanReplay.comments.add",
-          "when": "false"
-        },
-        {
           "command": "humanReplay.guide.runStepAt",
           "when": "false"
         },
@@ -178,13 +138,6 @@
         {
           "command": "humanReplay.continueDisclosure",
           "when": "false"
-        }
-      ],
-      "comments/commentThread/context": [
-        {
-          "command": "humanReplay.comments.add",
-          "group": "inline",
-          "when": "commentController == humanReplay.comments"
         }
       ],
       "view/item/context": [
@@ -203,68 +156,6 @@
     "configuration": {
       "title": "Human Replay",
       "properties": {
-        "humanReplay.enabled": {
-          "type": "boolean",
-          "default": false,
-          "description": "Enable local FIM autocomplete (off on first open — the model layer is opt-in). Turn on via 'Human Replay: Toggle Autocomplete', which also walks the setup: server, model choice, download."
-        },
-        "humanReplay.apiBase": {
-          "type": "string",
-          "default": "http://localhost:11434",
-          "description": "Base URL of the local Ollama server."
-        },
-        "humanReplay.model": {
-          "type": "string",
-          "default": "qwen2.5-coder:1.5b-base",
-          "description": "Ollama model tag. Use a FIM-capable BASE model (not -instruct). e.g. qwen2.5-coder:1.5b-base, codestral:latest."
-        },
-        "humanReplay.promptModel": {
-          "type": "string",
-          "default": "qwen2.5-coder:7b-instruct",
-          "description": "INSTRUCT model used to turn collated replay comments into a sandbox-agent prompt (the surfacing layer). Must be an -instruct model, not the FIM base model."
-        },
-        "humanReplay.template": {
-          "type": "string",
-          "enum": [
-            "auto",
-            "qwen",
-            "codestral",
-            "deepseek",
-            "starcoder"
-          ],
-          "default": "auto",
-          "description": "FIM prompt template. 'auto' infers from the model name."
-        },
-        "humanReplay.maxTokens": {
-          "type": "number",
-          "default": 256,
-          "description": "Maximum tokens to generate per completion (num_predict)."
-        },
-        "humanReplay.temperature": {
-          "type": "number",
-          "default": 0.01,
-          "description": "Sampling temperature. Low values give stable, deterministic completions."
-        },
-        "humanReplay.debounceMs": {
-          "type": "number",
-          "default": 300,
-          "description": "Delay after the last keystroke before requesting a completion."
-        },
-        "humanReplay.prefixChars": {
-          "type": "number",
-          "default": 3000,
-          "description": "Characters of context kept before the cursor."
-        },
-        "humanReplay.suffixChars": {
-          "type": "number",
-          "default": 1000,
-          "description": "Characters of context kept after the cursor."
-        },
-        "humanReplay.multiline": {
-          "type": "boolean",
-          "default": true,
-          "description": "Allow multi-line completions. Disable for single-line-only suggestions."
-        },
         "humanReplay.guidePath": {
           "type": "string",
           "default": "",

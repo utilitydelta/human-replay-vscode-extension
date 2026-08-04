@@ -12,10 +12,11 @@ a README or guides unless asked.
 
 A change that violates one of these is drift, not a feature.
 
-- **Model-free hero path.** Disclosure, diff-replay, the surgical/rewrite
-  cutover, routing, resume, and anchors never call a model. The model is an
-  opt-in aid on exactly two paths: FIM autocomplete and the comments-to-prompt
-  generator. Never put inference on a replay or routing decision.
+- **Model-free, end to end.** Disclosure, diff-replay, the surgical/rewrite
+  cutover, routing, resume, and anchors never call a model — and neither does
+  anything else here. The extension has no model layer at all: no inference on
+  a replay decision, no inference beside one. A feature that wants a model
+  belongs in a different extension.
 - **Ground truth.** Every token the human lands is a real sandbox or branch
   byte. The diff invents nothing in either direction; the oracles assert
   byte-exactness. When bytes can't be proven to belong somewhere, surface to
@@ -26,9 +27,9 @@ A change that violates one of these is drift, not a feature.
 - **The human decides; the AST proposes.** Surgical vs rewrite, step routing,
   resume verdicts — all computed model-free and ratified by the human at the
   keyboard.
-- **Opt-in model layer.** Off on first open. Never auto-spawn Ollama and never
-  auto-pull a model; detect and guide — one-click gestures (start the server,
-  download the model) the human ratifies.
+- **One job.** Read the guide, Tab the code in. Anything that isn't the guide,
+  the walk, or the surface the human Tabs against is scope the extension does
+  not carry.
 
 ## Conventions
 
@@ -64,11 +65,8 @@ A change that violates one of these is drift, not a feature.
   discloses by blank-line groups): `fileWalk.ts`. Guide:
   `guide.ts` (parser), `guideRunner.ts` (program counter + routing + resume +
   phase-boundary pause), `resume.ts`, `programCounter.ts`, `guideTree.ts`.
-  Surfacing: `comments.ts`, `commentAnchor.ts`, `promptgen.ts`,
-  `actionability.ts`.
-- `src/` — FIM autocomplete (completionProvider, ollama, templates,
-  postprocess, config, modelPull for the one-click download) beside the
-  extension entry.
+- `src/` — the extension entry (`extension.ts`) and `ghostProvider.ts`, the
+  inline-completion surface both engines render their ghosts through.
 - `test/*.test.cjs` — headless oracles, parameterized over corpora, each naming
   the invariant it proves.
 - `scripts/validate-guide.js` — the guide oracle: parses with the real parser,

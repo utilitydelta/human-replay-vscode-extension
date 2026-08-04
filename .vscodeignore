@@ -7,6 +7,7 @@ test/**
 scripts/**
 replay-guides/**
 docs/**
+session/**
 feedback.md
 esbuild.js
 tsconfig.json

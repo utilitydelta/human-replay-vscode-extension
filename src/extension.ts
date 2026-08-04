@@ -2,30 +2,17 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { HumanReplayCompletionProvider } from "./completionProvider";
+import { ReplayGhostProvider } from "./ghostProvider";
 import { DisclosureController } from "./disclosure/controller";
 import { DiffReplayController } from "./disclosure/diffReplayController";
 import { ReplayOrchestrator } from "./disclosure/orchestrator";
 import { GuideRunner } from "./disclosure/guideRunner";
 import { GuideTreeProvider } from "./disclosure/guideTree";
-import { CommentLayer } from "./disclosure/comments";
-import { buildMessages, generatePrompt } from "./disclosure/promptgen";
-import { setIsActionable } from "./disclosure/actionability";
-import { readConfig } from "./config";
-import { chooseAutocompleteModel, ensureAutocompleteReady, offerModelPull, startOllamaTerminal } from "./modelPull";
 import { surfaceRetrospective } from "./retrospective/surface";
 
 export function activate(context: vscode.ExtensionContext) {
   const output = vscode.window.createOutputChannel("Human Replay");
   context.subscriptions.push(output);
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand("humanReplay.startOllama", () => startOllamaTerminal(output)),
-    vscode.commands.registerCommand("humanReplay.chooseModel", () => {
-      const c = readConfig();
-      void chooseAutocompleteModel(c.apiBase, c.model, output);
-    }),
-  );
 
   const retrospectives = vscode.languages.createDiagnosticCollection("replay-retrospective");
   context.subscriptions.push(retrospectives);
@@ -35,19 +22,12 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(diffReplay);
   const orchestrator = new ReplayOrchestrator(output, disclosure, diffReplay);
   const guideRunner = new GuideRunner(output, disclosure, orchestrator);
-  // The comment layer feeds two consumers: the sandbox prompt generator, and
-  // the FIM prompt weave (a note steers the local completion at the caret).
-  const comments = new CommentLayer(output);
-  context.subscriptions.push(comments);
-  const provider = new HumanReplayCompletionProvider(output, disclosure, diffReplay, comments);
-  context.subscriptions.push(provider);
-  context.subscriptions.push(
-    vscode.commands.registerCommand("humanReplay.reviveAutocomplete", () => void provider.revive(readConfig().apiBase)),
-  );
+  // The ghost surface both engines render through. It proposes only what a
+  // running replay already holds — no replay, no ghost.
   context.subscriptions.push(
     vscode.languages.registerInlineCompletionItemProvider(
       { pattern: "**" },
-      provider,
+      new ReplayGhostProvider(disclosure, diffReplay),
     ),
   );
 
@@ -120,78 +100,15 @@ export function activate(context: vscode.ExtensionContext) {
     }),
   );
 
-  // Surfacing layer: collate inline comments while reading the replay, then take
-  // one of three exits. "Pull into prompt" runs the S10 template through the local
-  // instruct model — pre-gated (no comments → no call) with the human reading the
-  // generated prompt before anything sends (invariant 2; S10 proved both mandatory).
-  // Keep note bubbles on the code they were about as the replay shifts the buffer.
-  // Cheap: only re-parses while notes are actually collated.
+  // Both engines watch the buffer for the human authoring mid-step: the walk
+  // switches to re-anchored mode, the modify path re-anchors or surfaces a
+  // collision. Ground truth is the bytes, so the bytes are what we watch.
   context.subscriptions.push(
     vscode.workspace.onDidChangeTextDocument((e) => {
-      if (comments.count > 0 && e.contentChanges.length > 0) comments.reanchor();
-      disclosure.noteChange(e); // detect the human authoring mid-walk → re-anchored mode
-      diffReplay.noteChange(e); // same, for the modify path: re-anchor or surface a collision
+      disclosure.noteChange(e);
+      diffReplay.noteChange(e);
     }),
   );
-  context.subscriptions.push(
-    vscode.commands.registerCommand("humanReplay.comments.add", (reply: vscode.CommentReply) => comments.add(reply)),
-    vscode.commands.registerCommand("humanReplay.comments.clear", () => comments.clear()),
-    vscode.commands.registerCommand("humanReplay.comments.nextBlock", () => comments.nextBlock()),
-    vscode.commands.registerCommand("humanReplay.comments.pullPrompt", async () => {
-      const editor = vscode.window.activeTextEditor;
-      if (!editor) return;
-      if (comments.count === 0) {
-        vscode.window.showInformationMessage("Human Replay: no comments to pull — nothing to send.");
-        return; // model-free pre-gate: never call the model with nothing
-      }
-      // Model-free actionability gate (S10): the 7B fabricates a task from vague
-      // notes no matter how it's prompted, so screen upstream. The human can still
-      // override — this is a smell, not a lock (invariant 2: the human decides).
-      if (!setIsActionable(comments.comments.map((c) => c.text))) {
-        output.appendLine("[comments] actionability gate: notes look too vague to act on");
-        const choice = await vscode.window.showWarningMessage(
-          "Human Replay: these notes look too vague to act on. A local model tends to fabricate a task from low-information comments. Send anyway?",
-          { modal: true },
-          "Send anyway",
-        );
-        if (choice !== "Send anyway") return;
-      }
-      const cfg = readConfig();
-      // Same emptied-setting trap as humanReplay.model: "" must fall back.
-      const model = vscode.workspace.getConfiguration("humanReplay").get<string>("promptModel", "qwen2.5-coder:7b-instruct").trim() || "qwen2.5-coder:7b-instruct";
-      const code = editor.document.getText();
-      const messages = buildMessages("the function under review", code, comments.comments);
-      try {
-        const prompt = await vscode.window.withProgress(
-          { location: vscode.ProgressLocation.Notification, title: `Human Replay: generating prompt (${model})…` },
-          () => generatePrompt(cfg.apiBase, model, messages),
-        );
-        // Human reads (and may edit) before it ever sends — the S10 backstop.
-        const doc = await vscode.workspace.openTextDocument({
-          language: "markdown",
-          content: `<!-- Review this prompt, edit if needed, then send to the sandbox agent. -->\n<!-- (sending is not wired in this slice — this is the read-before-send gate.) -->\n\n${prompt}\n`,
-        });
-        await vscode.window.showTextDocument(doc, { preview: false });
-      } catch (e) {
-        const msg = String(e);
-        if (/fetch failed|ECONNREFUSED|ENOTFOUND|EAI_AGAIN/i.test(msg)) {
-          void vscode.window
-            .showWarningMessage(
-              "Human Replay: the prompt generator needs the local model server, which isn't running.",
-              "Start it",
-            )
-            .then((choice) => {
-              if (choice === "Start it") startOllamaTerminal(output);
-            });
-        } else if (/not found|no such model|model/i.test(msg)) {
-          void offerModelPull(cfg.apiBase, model, output, "the prompt generator needs its model — a one-time download");
-        } else {
-          vscode.window.showWarningMessage(`Human Replay: prompt generation failed — ${msg}`);
-        }
-      }
-    }),
-  );
-
   // Bail out of whatever the replay is showing — insert walk, diff-replay
   // decorations, or a rewrite strike. One gesture (Esc / palette), every engine;
   // the buffer stays as-is and the guide step stays current for a re-run. This
@@ -540,29 +457,6 @@ export function activate(context: vscode.ExtensionContext) {
       const at = e.selections[0].active;
       if (disclosure.isActive(doc)) void disclosure.onSelectionChanged(doc, at);
       else if (diffReplay.isActive(doc)) void diffReplay.onSelectionChanged(doc, at);
-    }),
-  );
-
-  // The intent gesture: turning autocomplete ON walks readiness — server up?
-  // model present? — offering each fix as one click, in autocomplete language.
-  // The persona wants "local autocomplete on", not an Ollama tutorial.
-  context.subscriptions.push(
-    vscode.commands.registerCommand("humanReplay.toggle", async () => {
-      const cfg = vscode.workspace.getConfiguration("humanReplay");
-      const next = !cfg.get<boolean>("enabled", false);
-      await cfg.update(
-        "enabled",
-        next,
-        vscode.ConfigurationTarget.Global,
-      );
-      vscode.window.setStatusBarMessage(
-        `Human Replay: local autocomplete ${next ? "enabled" : "disabled"}`,
-        2000,
-      );
-      if (next) {
-        const c = readConfig();
-        void ensureAutocompleteReady(c.apiBase, c.model, output);
-      }
     }),
   );
 

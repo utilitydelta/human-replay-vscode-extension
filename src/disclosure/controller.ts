@@ -19,7 +19,7 @@ const SETTLE_MS = 450; // wait for typing to settle before re-offering the recov
 // When a session is active the completion provider yields the current step's
 // text as a ghost; accepting it repositions the cursor into the just-opened block
 // (or back out to the parent's next sibling) and the next ghost appears. Model-
-// free: never touches Ollama.
+// free: every byte is a sandbox byte, and nothing here calls out.
 //
 // Happy path: the ghost is gated on cursor position — it shows only when the
 // cursor sits on the current step's baked insertion anchor. Wandering off hides

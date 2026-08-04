@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.0.0
+
+The extension does one job now: read the replay guide, Tab the code in. The local
+autocomplete moved to its own extension and the replay-notes layer went with it.
+Nothing left here calls a model, on any path.
+
+- Local FIM autocomplete is gone: the Ollama client, the prompt templates, the
+  one-click model download, and all eleven model settings. If you had it on,
+  `humanReplay.enabled` is now an unknown setting in your `settings.json` and can
+  be deleted.
+- Inline replay notes and the comments-to-prompt generator are gone, along with
+  the four Comments: commands and the gutter comment bubble.
+- Replay itself is untouched. Guide loading, the walk, diff-replay, Patch steps,
+  resume, the guide panel, and every Tab keybinding behave exactly as they did.
+
 ## 0.5.0
 
 Patch steps and create-file walks stop collapsing. A large or scattered Patch used
