@@ -75,6 +75,7 @@ export class DisclosureController {
   private recoverySettled = false;
   private continuing = false; // Tab re-entrancy latch for the re-anchored continue
   private recoveryEligible = false; // mirror of the context key, for dedupe
+  private lastQueryLog: string | undefined; // dedupe key for the provider serve/decline line
   private hintedIneligible = false; // one hint per excursion out of the container
   private hintedNoVerdict = false; // one hint per session when the region won't parse
   // The climb-out preview: the caret can't host the ghost (it sits in a child
@@ -136,6 +137,18 @@ export class DisclosureController {
     return this.session.anchorOffset + step.insertOffset;
   }
 
+  // One line per step, both ways. Three "armed, no ghost, dead Tab" incidents on
+  // the diff-replay side were diagnosed blind because nothing said whether VS
+  // Code had even queried the provider — serve does not mean draw, and only the
+  // serve line tells the two apart. Deduped on the step, so the per-keystroke
+  // auto-queries can't drown the channel.
+  private logQuery(message: string): void {
+    const key = `${this.session?.index}|${message}`;
+    if (this.lastQueryLog === key) return;
+    this.lastQueryLog = key;
+    this.output.appendLine(`[disclosure] ${message}`);
+  }
+
   // The ghost for the current step. Baked path: only when the cursor is on its
   // anchor. Recovery path: an insert at the cursor.
   currentItem(
@@ -147,7 +160,14 @@ export class DisclosureController {
     const step = this.session?.current();
     const expected = this.expectedOffset();
     if (!step || expected === undefined) return undefined;
-    if (document.offsetAt(position) !== expected) return undefined;
+    if (document.offsetAt(position) !== expected) {
+      this.logQuery("provider declined: caret is off the step's anchor");
+      return undefined;
+    }
+    this.logQuery(
+      `provider served step ${this.session!.index + 1}/${this.session!.steps.length} ` +
+        `(${step.insert.split("\n").length} line(s), ${step.insert.length} chars)`,
+    );
 
     this.lastOffered = { offset: expected, text: step.insert };
     const item = new vscode.InlineCompletionItem(
@@ -194,6 +214,10 @@ export class DisclosureController {
     }
 
     const built = buildRecoveryGhost(lineText, position.character, step);
+    this.logQuery(
+      `provider served recovery step ${s.index + 1}/${s.steps.length} ` +
+        `(${built.text.split("\n").length} line(s), ${built.text.length} chars)`,
+    );
     this.recoveryGhost = { offset: at, text: built.text, caret: at + built.caret };
     this.lastOffered = { offset: at, text: built.text };
     const item = new vscode.InlineCompletionItem(
@@ -230,6 +254,7 @@ export class DisclosureController {
     this.lastOffered = undefined;
     this.recoveryGhost = undefined;
     this.recoverySettled = false;
+    this.lastQueryLog = undefined;
     this.clearSettle();
     this.setDiverged(false);
     this.setActive(true);
@@ -258,6 +283,7 @@ export class DisclosureController {
     this.lastOffered = undefined;
     this.recoveryGhost = undefined;
     this.recoverySettled = false;
+    this.lastQueryLog = undefined;
     this.setDiverged(false);
     this.setActive(false);
   }
@@ -271,6 +297,7 @@ export class DisclosureController {
     this.lastOffered = undefined;
     this.recoveryGhost = undefined;
     this.recoverySettled = false;
+    this.lastQueryLog = undefined;
     this.setDiverged(false);
     this.setActive(false);
     this.onComplete?.(session);

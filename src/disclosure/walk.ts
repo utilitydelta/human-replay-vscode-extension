@@ -13,9 +13,11 @@
 // Offsets are exact because the walk simulates the build on a growing string,
 // and layout comes from source bytes (leads, blank lines, close braces are all
 // slices of the input). Disclosure units = control-flow blocks (function/for/
-// while/loop/if without else) and item containers (class/impl/mod — members
-// disclose one by one). match arms, closures, if/else, struct literals are
-// leaves: revealed whole.
+// while/loop/if without else), item containers (class/impl/mod — members
+// disclose one by one), and a block that CLOSES a call's arguments (the spawned
+// task body, the trailing closure) — those carry whole subroutines and revealing
+// one whole is no disclosure at all. match arms, if/else, struct literals and
+// mid-chain closures are leaves: revealed whole.
 
 import { LanguageSpec, RUST, parserFor } from "./language";
 
@@ -268,8 +270,12 @@ export function computeSteps(src: string, spec: LanguageSpec = RUST): Step[] {
       return pos + text.length;
     }
     const header = src.slice(d.node.startIndex, d.block.startIndex + 1); // ends with `{`
-    // The recovery shell (no baked lead/blank line): `header {\n}`.
-    const bareText = header + "\n}";
+    // Bytes after the block's `}` that still belong to the node — `));` on a
+    // `tasks.push(spawn(async move { … }));`. Empty for every block-tailed node
+    // (fn, for, if), where node and block end together.
+    const tail = src.slice(d.block.endIndex, node.endIndex);
+    // The recovery shell (no baked lead/blank line): `header {\n}` + any tail.
+    const bareText = header + "\n}" + tail;
     // A member's leading trivia (doc comments, attributes) is not a disclosure
     // step of its own — it is the member's lead, folded into the member's block
     // exactly as top-level trivia rides the walk-start's prefix. Left as separate
@@ -280,7 +286,7 @@ export function computeSteps(src: string, spec: LanguageSpec = RUST): Step[] {
 
     if (kids.length === 0) {
       // Empty (or trivia-only) body: the shell IS the node — emit its interior verbatim.
-      const body = lead + header + src.slice(d.block.startIndex + 1, d.block.endIndex);
+      const body = lead + header + src.slice(d.block.startIndex + 1, node.endIndex);
       splice(pos, body);
       raw.push({ insert: body, insertPos: pos, kind: "container", parentKey, bareText, col: colOf(d.node.startIndex) });
       return pos + body.length;
@@ -297,7 +303,7 @@ export function computeSteps(src: string, spec: LanguageSpec = RUST): Step[] {
     while (firstStart < kids[0].startIndex && (src[firstStart] === " " || src[firstStart] === "\t")) firstStart++;
     const preFirst = src.slice(d.block.startIndex + 1, firstStart);
     const firstLead = src.slice(firstStart, kids[0].startIndex);
-    const close = src.slice(kids[kids.length - 1].endIndex, d.block.endIndex);
+    const close = src.slice(kids[kids.length - 1].endIndex, node.endIndex);
     const body = lead + header + preFirst + close;
     splice(pos, body);
     raw.push({ insert: body, insertPos: pos, kind: "container", parentKey, bareText, col: colOf(d.node.startIndex) });

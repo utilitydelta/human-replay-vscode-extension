@@ -2,7 +2,7 @@
   "name": "human-replay",
   "displayName": "Human Replay",
   "description": "Replay sandboxed AI work into your real branch one Tab at a time. Guide-driven and model-free.",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "publisher": "utilitydelta",
   "license": "Apache-2.0",
   "icon": "media/icon.png",

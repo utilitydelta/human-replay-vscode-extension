@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.1.0
+
+A spawned task body used to arrive as one ghost. `tasks.push(tokio::spawn(async move { ... }))`
+revealed whole, so a 117-line body was a single Tab and no disclosure at all. Rust
+blocks that close a call's argument list now descend.
+
+- The block that closes a call's arguments discloses statement by statement. That
+  covers the spawned task body and the trailing closure (`xs.iter().for_each(|x| { ... })`).
+  Bytes after its close brace, the `));`, ride the shell, so nothing is stranded.
+  Only a trailing block qualifies: a closure with real arguments after it still
+  reveals whole, and mid-chain closures are unchanged.
+- The output channel says whether VS Code queried the provider at all, and whether
+  the step served or declined. "Armed, no ghost, dead Tab" used to look identical to
+  "never queried", because serving is not drawing. One line per step, deduped so the
+  per-keystroke auto-queries don't drown the channel.
+
 ## 1.0.0
 
 The extension does one job now: read the replay guide, Tab the code in. The local

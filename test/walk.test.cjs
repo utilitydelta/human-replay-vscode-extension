@@ -62,6 +62,14 @@ const CORPUS = [
     name: "match (revealed whole)",
     code: `fn classify(s: State) -> Kind {\n    match s {\n        State::Leader => Kind::Writer,\n        State::Follower => Kind::Reader,\n    }\n}`,
   },
+  {
+    name: "spawned async block (tail bytes after the close brace)",
+    code: `fn spawn_all(n: usize) -> Vec<Handle> {\n    let mut tasks = Vec::new();\n    for id in 0..n {\n        tasks.push(tokio::spawn(async move {\n            let mut seq = 0u64;\n            seq += id as u64;\n            seq\n        }));\n    }\n    tasks\n}`,
+  },
+  {
+    name: "trailing closure (move || { .. })",
+    code: `fn each(xs: &[i32]) -> i32 {\n    let mut total = 0;\n    xs.iter().for_each(|x| {\n        total += x;\n    });\n    total\n}`,
+  },
 ];
 
 // --- helpers ---------------------------------------------------------------
@@ -169,6 +177,27 @@ for (const { name, code } of CORPUS) {
     );
   });
 }
+
+// --- a spawned task body is not one leaf -------------------------------------
+// A `tasks.push(tokio::spawn(async move { .. }))` used to reveal whole, so a
+// 117-line task body arrived as ONE ghost and one Tab — no disclosure, and the
+// biggest single item the native inline surface was ever asked to draw. The
+// block descends now; the bytes after its close brace (`));`) ride the shell.
+test("spawned async block discloses statement by statement, not as one leaf", () => {
+  const code = `fn spawn_all(n: usize) -> Vec<Handle> {\n    let mut tasks = Vec::new();\n    for id in 0..n {\n        tasks.push(tokio::spawn(async move {\n            let mut seq = 0u64;\n            seq += id as u64;\n            seq\n        }));\n    }\n    tasks\n}`;
+  const steps = computeSteps(code);
+  const shell = steps.find((s) => s.insert.includes("tokio::spawn"));
+  assert.ok(shell, "the spawn call opens as a step of its own");
+  assert.strictEqual(shell.kind, "container", "it descends rather than revealing whole");
+  assert.ok(shell.insert.includes("}));"), "the trailing `));` closes the shell — no bytes stranded");
+  assert.ok(!shell.insert.includes("seq += id"), "the body is NOT baked into the shell");
+  for (const line of ["let mut seq = 0u64;", "seq += id as u64;"]) {
+    assert.ok(
+      steps.some((s) => s.insert.trim() === line),
+      `\`${line}\` discloses as its own step`,
+    );
+  }
+});
 
 // --- baseIndent: byte-exact at container depth -------------------------------
 // A create inside an impl/class parks the cursor at the container's child indent;

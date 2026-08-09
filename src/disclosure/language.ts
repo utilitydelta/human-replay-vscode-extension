@@ -62,6 +62,29 @@ const bodyOf = (node: SyntaxNode, fields: string[], blockTypes: Set<string>): Sy
   return null;
 };
 
+// The block of a closure or async block that CLOSES a call's argument list —
+// `tasks.push(tokio::spawn(async move { … }))`, `spawn_blocking(move || { … })`.
+// Everything after it is `)`s and `;`, so the walk's header/close slicing holds
+// and the body's statements disclose one by one instead of arriving as one
+// several-hundred-line leaf. Only a trailing one qualifies: a closure with real
+// arguments after it would put source bytes between the block and the node's
+// end, which the shell has no place for.
+const trailingBlockArg = (node: SyntaxNode, depth = 0): SyntaxNode | null => {
+  if (depth > 4) return null;
+  if (node.type === "async_block") {
+    const b = node.namedChild(node.namedChildCount - 1);
+    return b && b.type === "block" ? b : null;
+  }
+  if (node.type === "closure_expression") {
+    const b = node.childForFieldName("body");
+    return b && b.type === "block" ? b : null;
+  }
+  if (node.type !== "call_expression" && node.type !== "expression_statement") return null;
+  const args = node.type === "call_expression" ? node.childForFieldName("arguments") : node;
+  const last = args && args.namedChildCount > 0 ? args.namedChild(args.namedChildCount - 1) : null;
+  return last ? trailingBlockArg(last, depth + 1) : null;
+};
+
 const RUST_ITEMS = new Set([
   "function_item",
   "struct_item",
@@ -104,7 +127,7 @@ export const RUST: LanguageSpec = {
       case "mod_item":
         return withBlock(node, bodyOf(node, ["body"], new Set(["declaration_list"])));
       default:
-        return null;
+        return withBlock(node, trailingBlockArg(node));
     }
   },
   containerBody(node) {
