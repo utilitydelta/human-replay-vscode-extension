@@ -56,6 +56,7 @@ export class DisclosureController {
   private session: DisclosureSession | undefined;
   private onComplete?: (session: DisclosureSession) => void;
   private onCollision?: () => void;
+  private onSessionEnd?: (outcome: { reason: "complete" | "cancelled"; accepted: number }) => void;
   // Set at the end of an accept so the next trigger can report the re-trigger gap.
   private lastAcceptAt: number | undefined;
   // The text we last offered (baked ghost or recovery ghost) — lets noteChange tell
@@ -94,6 +95,14 @@ export class DisclosureController {
   // the hook the retrospective gating hangs on (the step end is a thinking point).
   setCompletionHandler(handler: (session: DisclosureSession) => void): void {
     this.onComplete = handler;
+  }
+
+  // Fires whenever a session ends, completed or cancelled, with how many steps
+  // the human accepted. The rewrite orchestrator listens: a cancel at ZERO
+  // steps after a clear is the dead-end gesture (the hole stays), and only
+  // this signal tells it the walk is over and nothing landed.
+  setSessionEndHandler(handler: (outcome: { reason: "complete" | "cancelled"; accepted: number }) => void): void {
+    this.onSessionEnd = handler;
   }
 
   // Fired when a re-anchored continue can't place the next node (its parent in the
@@ -142,8 +151,11 @@ export class DisclosureController {
   // Code had even queried the provider — serve does not mean draw, and only the
   // serve line tells the two apart. Deduped on the step, so the per-keystroke
   // auto-queries can't drown the channel.
-  private logQuery(message: string): void {
-    const key = `${this.session?.index}|${message}`;
+  // `dedupeKey` lets a message embed varying detail (the decline's caret
+  // position) without each variation dodging the dedupe and drowning the
+  // channel — pass the stable part; the default is the whole message.
+  private logQuery(message: string, dedupeKey = message): void {
+    const key = `${this.session?.index}|${dedupeKey}`;
     if (this.lastQueryLog === key) return;
     this.lastQueryLog = key;
     this.output.appendLine(`[disclosure] ${message}`);
@@ -161,7 +173,14 @@ export class DisclosureController {
     const expected = this.expectedOffset();
     if (!step || expected === undefined) return undefined;
     if (document.offsetAt(position) !== expected) {
-      this.logQuery("provider declined: caret is off the step's anchor");
+      // Both positions, line:col — two live declines were diagnosed blind
+      // because this line didn't say where the caret actually was.
+      const anchor = document.positionAt(expected);
+      this.logQuery(
+        `provider declined: caret ${position.line + 1}:${position.character + 1} ` +
+          `is off the step's anchor ${anchor.line + 1}:${anchor.character + 1}`,
+        "declined: off anchor",
+      );
       return undefined;
     }
     this.logQuery(
@@ -270,8 +289,10 @@ export class DisclosureController {
 
   cancel(): void {
     if (!this.session) return;
-    this.output.appendLine(`[disclosure] cancelled at step ${this.session.index}`);
+    const accepted = this.session.index;
+    this.output.appendLine(`[disclosure] cancelled at step ${accepted}`);
     this.end();
+    this.onSessionEnd?.({ reason: "cancelled", accepted });
   }
 
   // Drop the session without firing the completion hook — for cancel and collision,
@@ -301,6 +322,7 @@ export class DisclosureController {
     this.setDiverged(false);
     this.setActive(false);
     this.onComplete?.(session);
+    this.onSessionEnd?.({ reason: "complete", accepted: session.steps.length });
   }
 
   // Runs after the user accepts a step's ghost (VS Code has already inserted the
@@ -580,12 +602,17 @@ export class DisclosureController {
   // latch until the human clicked OK — an unnoticed notification dead-keyed
   // every later Tab.
   private surfaceCollision(): void {
+    const accepted = this.session?.index ?? 0;
     this.onCollision?.();
     this.output.appendLine("[disclosure] collision: next node's parent is gone — surfacing");
     void vscode.window.showWarningMessage(
       "Human Replay: the next node's place in the tree changed too much to fill automatically — finish this symbol by hand.",
     );
     this.end();
+    // A collision ends the session as surely as a cancel — the rewrite
+    // orchestrator's restore listens for exactly this (a collision at zero
+    // steps after a clear was the live 3.3 dead end).
+    this.onSessionEnd?.({ reason: "cancelled", accepted });
   }
 
   // Single trigger path. Baked: re-trigger the ghost when the cursor lands on the

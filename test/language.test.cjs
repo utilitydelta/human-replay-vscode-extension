@@ -50,11 +50,13 @@ test.after(() => {
 function replayControllerPolicy(buffer, steps, spec) {
   let buf = buffer;
   let selfDelta = 0;
+  const ledger = [];
   for (const [i, st] of steps.entries()) {
-    const r = resolveStep(buf, parseRoot(buf, spec), st, selfDelta);
+    const r = resolveStep(buf, parseRoot(buf, spec), st, selfDelta, ledger);
     assert.ok(r, `step ${i} must resolve (null = the collision modal)`);
     buf = buf.slice(0, r[0]) + st.replacement + buf.slice(r[1]);
     selfDelta += st.replacement.length - (r[1] - r[0]);
+    ledger.push({ offset: r[0], rangeLength: r[1] - r[0], textLength: st.replacement.length, self: true });
   }
   return buf;
 }

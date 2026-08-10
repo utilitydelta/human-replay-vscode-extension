@@ -1,0 +1,3 @@
+,
+            MetablockKind::EventBatch(event_batch) => {
+                log_segment_file_metadata.write.aggregate_key_bloom.borrow_mut().insert(&event_batch.aggregate_key);}

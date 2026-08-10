@@ -42,6 +42,22 @@ export function splitLeadingPad(sym: string): { pad: string; rest: string } {
   return { pad, rest: sym.slice(pad.length) };
 }
 
+/**
+ * The indent a rewrite-cleared line must carry before the new symbol's walk
+ * starts. Which side owns the pad flips with where each symbol's trivia
+ * starts: a doc-commented symbol's bytes INCLUDE the line indent (extraction
+ * runs from line start), a bare symbol's exclude it (the indent stays in the
+ * buffer, left of the park point). So a doc-commented new symbol dictates its
+ * own pad (never stacked on a surviving prefix); a bare new symbol keeps the
+ * buffer's surviving indent, or — when the strike consumed it because the OLD
+ * side carried the pad — retypes the old symbol's. `prefix` is the buffer's
+ * whitespace left of the cleared range on its line.
+ */
+export function reconcileRewritePad(prefix: string, oldPad: string, newPad: string): string {
+  if (newPad !== "") return newPad;
+  return prefix === "" ? oldPad : prefix;
+}
+
 export type CreatePlacement =
   /** Replace [start, end) of the target with `scaffold`, then park the cursor at
    *  `cursorAt` (post-edit offset, on a fresh line at column `indent`). */

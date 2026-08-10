@@ -60,7 +60,11 @@ A change that violates one of these is drift, not a feature.
 
 - `src/disclosure/` — the engine. Insert walk: `walk.ts`, `session.ts`,
   `controller.ts`. Edit-aware: `diff.ts`, `replay.ts`, `sequence.ts`,
-  `strategy.ts`, `diffReplayController.ts`, `orchestrator.ts`. Patch steps
+  `strategy.ts`, `diffReplayController.ts`, `orchestrator.ts`. Pure-insert
+  safety: `ledger.ts` (observed-delta ledger — every change the session sees,
+  self and foreign, transforms unlanded insert points OT-style) and `proof.ts`
+  (dual-sided context baked per pure insert; every resolve leg must ratify
+  both sides or the step collides). Patch steps
   (line-grain, below symbol grain): `lineDiff.ts`. File walk (create-file
   discloses by blank-line groups): `fileWalk.ts`. Guide:
   `guide.ts` (parser), `guideRunner.ts` (program counter + routing + resume +
@@ -68,7 +72,9 @@ A change that violates one of these is drift, not a feature.
 - `src/` — the extension entry (`extension.ts`) and `ghostProvider.ts`, the
   inline-completion surface both engines render their ghosts through.
 - `test/*.test.cjs` — headless oracles, parameterized over corpora, each naming
-  the invariant it proves.
+  the invariant it proves. `test/corpus/` ships the recorded live-incident
+  bytes (the `sync` symbol pair + the 175-byte foreign ghost) that
+  `insert-proof.test.cjs` replays.
 - `scripts/validate-guide.js` — the guide oracle: parses with the real parser,
   resolves every step's bytes from target + sandbox, replays modify steps
   through the controller's exact sequential policy. Guide authors (human or

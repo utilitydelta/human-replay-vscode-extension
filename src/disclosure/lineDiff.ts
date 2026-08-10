@@ -9,6 +9,7 @@
 
 import { EditOp, OpAnchor } from "./diff";
 import { ReplayStep } from "./sequence";
+import { bakeInsertProofs } from "./proof";
 
 // A Patch op never re-anchors structurally; the anchor field just satisfies the
 // EditOp shape.
@@ -181,11 +182,15 @@ export function lineDiffSteps(oldText: string, newText: string): ReplayStep[] {
   }
   emit(pa, aMid.length, pb, bMid.length);
 
-  return ops.map((op) => ({
-    ...op,
-    singleLine: !op.oldText.includes("\n") && !op.replacement.includes("\n"),
-    originalText: op.oldText,
-  }));
+  return bakeInsertProofs(
+    ops.map((op) => ({
+      ...op,
+      singleLine: !op.oldText.includes("\n") && !op.replacement.includes("\n"),
+      originalText: op.oldText,
+    })),
+    oldText,
+    newText,
+  );
 }
 
 /** Line count of a hunk's text. A single trailing newline terminates the last

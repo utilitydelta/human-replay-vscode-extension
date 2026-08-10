@@ -135,12 +135,14 @@ for (const { name, old: oSrc, new: nSrc, perturb } of CORPUS) {
 function replayControllerPolicy(buffer, steps) {
   let buf = buffer;
   let selfDelta = 0;
+  const ledger = [];
   for (const [i, st] of steps.entries()) {
     const root = parseRoot(buf);
-    const r = resolveStep(buf, root, st, selfDelta);
+    const r = resolveStep(buf, root, st, selfDelta, ledger);
     assert.ok(r, `step ${i} must resolve (collision = the surfaced modal)`);
     buf = buf.slice(0, r[0]) + st.replacement + buf.slice(r[1]);
     selfDelta += st.replacement.length - (r[1] - r[0]);
+    ledger.push({ offset: r[0], rangeLength: r[1] - r[0], textLength: st.replacement.length, self: true });
   }
   return buf;
 }
@@ -179,7 +181,7 @@ test("resolveStep: human edit before the op defeats arithmetic, structure still 
   // A hand edit ABOVE the op shifts the bytes without touching structure: the
   // arithmetic byte-check must fail closed and the structural anchor take over.
   const edited = oSrc.replace("let x = 1;", "let x = 100;");
-  const r = resolveStep(edited, parseRoot(edited), steps[0], 0);
+  const r = resolveStep(edited, parseRoot(edited), steps[0], 0, []);
   assert.ok(r, "structural fallback must resolve");
   assert.strictEqual(edited.slice(r[0], r[1]), steps[0].originalText);
 });

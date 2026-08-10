@@ -41,21 +41,34 @@ test.after(() => {
   fs.rmSync(entry, { force: true });
 });
 
-// The runner's exact sequential policy for a patch session.
+// The runner's exact sequential policy for a patch session. Every accept
+// books into the ledger (as noteChange does live) — the pure-insert leg
+// transforms through it.
 function replayHunks(oldText, steps) {
   let buf = oldText;
   let selfDelta = 0;
+  const ledger = [];
   for (const h of steps) {
-    const r = resolveStepNoTree(buf, h, selfDelta);
+    const r = resolveStepNoTree(buf, h, selfDelta, ledger);
     assert.ok(r, "every hunk must resolve (null = collision modal)");
     buf = buf.slice(0, r[0]) + h.replacement + buf.slice(r[1]);
     selfDelta += h.replacement.length - (r[1] - r[0]);
+    ledger.push({ offset: r[0], rangeLength: r[1] - r[0], textLength: h.replacement.length, self: true });
   }
   return buf;
 }
 
 // The real manual-bit shapes the Patch step exists for.
 const CASES = [
+  {
+    // Adversarial-review finding: an insert whose left-of-point bytes are all
+    // whitespace, at a point that is not a symbol boundary — the blank-left
+    // boundary rule false-collided this untouched happy path until it learned
+    // the line-start + non-blank-right form.
+    name: "insert after nothing but blank lines (blank left ctx, mid-file point)",
+    old: `\n\nfn rest() {}\n`,
+    new: `\n\nfn added() {}\nfn rest() {}\n`,
+  },
   {
     name: "import edit + const (the 44-file integration-test shape)",
     old: `use std::time::Duration;\n\nuse crate::{count_events, is_leader, write_event, TestServer};\n\nmod tests;\n\nfn run() {}\n`,

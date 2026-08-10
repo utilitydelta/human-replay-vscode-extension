@@ -10,6 +10,8 @@
 
 import { EditOp, Landmark, OpAnchor, parseRoot } from "./diff";
 import { SyntaxNode } from "./walk";
+import { ObservedEdit } from "./ledger";
+import { InsertProof, resolveInsertPoint } from "./proof";
 
 // Walk a named-child-index path from the root to the addressed node.
 function resolvePath(root: SyntaxNode, path: number[]): SyntaxNode {
@@ -103,12 +105,14 @@ export function resolveByContent(buffer: string, originalText: string): [number,
 }
 
 /** What the interactive resolver needs from a step: the baked old-source range,
- *  the exact bytes it replaces, and the structural anchor. */
+ *  the exact bytes it replaces, the structural anchor, and — for a pure
+ *  insert — the dual-sided context proof baked at build time. */
 export interface StepAddress {
   start: number;
   end: number;
   originalText: string;
   anchor: OpAnchor;
+  proof?: InsertProof;
 }
 
 /**
@@ -130,17 +134,24 @@ export interface StepAddress {
  * The parse-free resolver for line-grain Patch steps: arithmetic (byte-
  * validated) → unique-content match. No structural leg — a Patch op's hunks
  * live between lines, not tree nodes, and the file may have no grammar at all
- * (shell). A pure insert trusts arithmetic alone: only our own accepts shift
- * bytes, and their delta is exact. Null means collision — surface, never guess.
+ * (shell). A pure insert has no bytes of its own to validate, so its point is
+ * transformed through the ledger and every leg is gated by the dual-sided
+ * context proof (proof.ts) — the raw-arithmetic guess that landed the live
+ * incident 175 bytes stale is gone. Null means collision — surface, never
+ * guess.
  */
 export function resolveStepNoTree(
   symText: string,
   step: StepAddress,
   selfDelta: number,
+  ledger: readonly ObservedEdit[],
 ): [number, number] | null {
+  if (step.originalText === "") {
+    const p = resolveInsertPoint(symText, step, ledger, null);
+    return p === null ? null : [p, p];
+  }
   const a: [number, number] = [step.start + selfDelta, step.end + selfDelta];
   const aInBounds = a[0] >= 0 && a[1] <= symText.length;
-  if (step.originalText === "") return aInBounds ? a : null;
   if (aInBounds && symText.slice(a[0], a[1]) === step.originalText) return a;
   return resolveByContent(symText, step.originalText);
 }
@@ -150,11 +161,18 @@ export function resolveStep(
   root: SyntaxNode,
   step: StepAddress,
   selfDelta: number,
+  ledger: readonly ObservedEdit[],
 ): [number, number] | null {
+  const sr = tryResolveOp(root, step.anchor);
+  if (step.originalText === "") {
+    // The ledger-transformed arithmetic leads (exact under every observed
+    // edit, self and foreign); the structural anchor is the rescue when a
+    // straddling edit dirtied the point. Both gated by the dual proof.
+    const p = resolveInsertPoint(symText, step, ledger, sr ? sr[0] : null);
+    return p === null ? null : [p, p];
+  }
   const a: [number, number] = [step.start + selfDelta, step.end + selfDelta];
   const aInBounds = a[0] >= 0 && a[1] <= symText.length;
-  const sr = tryResolveOp(root, step.anchor);
-  if (step.originalText === "") return sr ?? (aInBounds ? a : null);
   if (aInBounds && symText.slice(a[0], a[1]) === step.originalText) return a;
   if (sr && symText.slice(sr[0], sr[1]) === step.originalText) return sr;
   return resolveByContent(symText, step.originalText);

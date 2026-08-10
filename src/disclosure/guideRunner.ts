@@ -153,30 +153,47 @@ export class GuideRunner {
       void this.saveFileWalkDoc(fw.uri);
     }
     const finished = this.pc.inFlightIndex;
-    if (!this.pc.complete()) {
+    if (finished === undefined) {
       this.output.appendLine("[guide] engine completion with no step in flight — ignored");
       return;
     }
-    this.changed();
-    if (finished !== undefined) {
-      this.output.appendLine(`[guide] step ${this.guide?.steps[finished]?.id ?? finished} complete`);
-      // The verify and the save are bystanders: neither may strand the flow —
-      // an exception between completion and flowInto froze the replay with no
-      // trace once already.
-      try {
-        this.verifySymbolLanding(finished);
-      } catch (e) {
-        this.output.appendLine(`[guide] landing verify failed: ${e instanceof Error ? e.message : String(e)}`);
-      }
-      // Persist what landed: symbol steps edit the buffer and nothing else
-      // saves it, so disk lags the session — resume derivation and any
-      // out-of-band read (build, forensics) see stale bytes until a manual
-      // Ctrl+S. The file walk already saves; match it.
-      this.saveStepDoc(finished).catch((e) => {
-        this.output.appendLine(`[guide] step save failed: ${e instanceof Error ? e.message : String(e)}`);
-      });
-      this.flowInto(finished);
+    // The verify runs BEFORE the counter marks done: "unresolvable" is the one
+    // verdict that means the file no longer parses — flowing on from a corrupt
+    // file is momentum into a dead end (the live 3.3 session marched two more
+    // steps past one). That verdict blocks the step and STOPS the run; kept
+    // human edits ("differs") stay a warning and keep flowing. The verify is
+    // otherwise a bystander: an exception in it must not strand the flow.
+    let verdict = "ok";
+    try {
+      verdict = this.verifySymbolLanding(finished);
+    } catch (e) {
+      this.output.appendLine(`[guide] landing verify failed: ${e instanceof Error ? e.message : String(e)}`);
     }
+    if (verdict === "unresolvable") {
+      const step = this.guide?.steps[finished];
+      this.pc.block();
+      this.changed();
+      this.output.appendLine(
+        `[guide] step ${step?.id ?? finished}: landed \`${step?.symbol}\` is unresolvable in ${step?.file} — run stopped at this step`,
+      );
+      void vscode.commands.executeCommand("humanReplay.guideSteps.focus");
+      void vscode.window.showWarningMessage(
+        `Human Replay: step ${step?.id} landed, but \`${step?.symbol}\` can't be parsed back out of ${step?.file} — the file is likely broken. ` +
+          `The run is stopped here: fix the file (undo, or finish by hand), then re-run the step.`,
+      );
+      return;
+    }
+    this.pc.complete();
+    this.changed();
+    this.output.appendLine(`[guide] step ${this.guide?.steps[finished]?.id ?? finished} complete`);
+    // Persist what landed: symbol steps edit the buffer and nothing else
+    // saves it, so disk lags the session — resume derivation and any
+    // out-of-band read (build, forensics) see stale bytes until a manual
+    // Ctrl+S. The file walk already saves; match it.
+    this.saveStepDoc(finished).catch((e) => {
+      this.output.appendLine(`[guide] step save failed: ${e instanceof Error ? e.message : String(e)}`);
+    });
+    this.flowInto(finished);
   }
 
   private async saveStepDoc(index: number): Promise<void> {
@@ -189,28 +206,32 @@ export class GuideRunner {
 
   // Ground truth beats the session for symbol steps too: a walk completing
   // proves gestures happened, not that the bytes match the sandbox (a recovery
-  // cascade once nested siblings doll-style and still read as done). A
-  // WARNING, not a block — Skip This Hunk and kept edits make honest,
-  // human-ratified divergence; a reload will read the step as pending either
-  // way, and re-running it offers the remaining delta as a diff.
-  private verifySymbolLanding(index: number): void {
+  // cascade once nested siblings doll-style and still read as done).
+  // "differs" is a WARNING, not a block — Skip This Hunk and kept edits make
+  // honest, human-ratified divergence; a reload reads the step as pending and
+  // re-running offers the remaining delta. "unresolvable" is different in
+  // kind: the symbol can't be parsed back out at all, the one signal the file
+  // is corrupt — the caller stops the run on it (work item 2).
+  private verifySymbolLanding(index: number): "ok" | "differs" | "unresolvable" {
     const step = this.guide?.steps[index];
-    if (!step || (step.action !== "create" && step.action !== "modify")) return;
+    if (!step || (step.action !== "create" && step.action !== "modify")) return "ok";
     const rel = step.file.split(":")[0];
     const spec = languageForFile(rel);
-    if (!spec) return;
+    if (!spec) return "ok";
     const doc = vscode.workspace.textDocuments.find((d) => d.uri.fsPath.endsWith(rel));
-    if (!doc) return;
+    if (!doc) return "ok";
     const after = step.after ?? this.readSandboxSymbol(step, spec);
-    if (after === undefined) return; // nothing to verify against — no verdict
+    if (after === undefined) return "ok"; // nothing to verify against — no verdict
     const live = this.symbolFrom(doc.getText(), step.symbol, spec);
-    if (live === after) return;
+    if (live === after) return "ok";
+    if (live === undefined) return "unresolvable"; // the caller stops and says why
     this.output.appendLine(
-      `[guide] step ${step.id}: landed \`${step.symbol}\` ${live === undefined ? "is unresolvable in the target" : "differs from the sandbox"} — done this session, pending on reload`,
+      `[guide] step ${step.id}: landed \`${step.symbol}\` differs from the sandbox — done this session, pending on reload`,
     );
     void vscode.window.showWarningMessage(
-      `Human Replay: step ${step.id} finished but \`${step.symbol}\` ${live === undefined ? "can't be found in the file — check the layout" : "differs from the sandbox (your kept edits, or drift)"}. Re-run the step to see the delta.`,
+      `Human Replay: step ${step.id} finished but \`${step.symbol}\` differs from the sandbox (your kept edits, or drift). Re-run the step to see the delta.`,
     );
+    return "differs";
   }
 
   // The one flow policy after a step resolves (completed, landed, or skipped).
@@ -868,6 +889,12 @@ export class GuideRunner {
       this.orchestrator.cancelAll();
       this.fileWalk = undefined;
     }
+    // A cancel at zero accepted steps restores a rewrite-cleared symbol — wait
+    // for that edit, or this run resolves its Before bytes from the hole (the
+    // 3.3 dead end: "unresolved bytes — Before (target symbol)"). Awaited
+    // UNCONDITIONALLY: an Esc (cancelDisclosure) or a skip already cleared
+    // in-flight, but its restore edit may still be airborne.
+    await this.orchestrator.settleRestore();
     if (step.action === "create-file") {
       await this.runCreateFile(index, step, wasMidFileWalk);
       return;

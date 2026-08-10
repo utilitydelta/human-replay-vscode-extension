@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.2.0
+
+Two live incidents drove this release. A foreign ghost Tab-accepted at an armed
+step landed two later inserts 175 bytes off, silently. And a file-walk segment
+froze the whole extension host: no ghost, dead Tab, dead save.
+
+- Pure inserts are proven, not guessed. Every change the session sees — its own
+  accepts and foreign edits alike — books into a ledger, and each insert bakes
+  context from both sides at build time. A point lands only where both sides
+  ratify; anything else collides loud and the log names the failed leg. The
+  incident's exact bytes ship as a test corpus and replay green.
+- Foreign bytes landing at the armed point pause the replay with a warning
+  instead of silently re-anchoring around them. Keep them or undo, then re-run
+  the step.
+- A rewrite cancelled at zero steps restores the struck symbol, byte-checked.
+  No more hole where the old code was. A partly landed walk keeps your work and
+  restores nothing.
+- Rewriting a nested doc-commented symbol reconciles the line indent before the
+  walk starts, so the first ghost is Tab-acceptable instead of dead-ending on
+  an indent.
+- Fixed the freeze: a file-walk block segment (imports, a comment block) bakes
+  a blank insert proof, and the collision forensics spun forever on it. The
+  loop is guarded and resolves are latched out while a pending insert is mid-
+  arm.
+
 ## 1.1.0
 
 A spawned task body used to arrive as one ghost. `tasks.push(tokio::spawn(async move { ... }))`

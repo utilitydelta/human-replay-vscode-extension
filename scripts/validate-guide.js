@@ -82,11 +82,13 @@ const sequentialReplay = (before, after, spec) => {
   const steps = buildReplaySteps(before, after, spec);
   let buf = before;
   let delta = 0;
+  const ledger = [];
   for (const [i, st] of steps.entries()) {
-    const r = resolveStep(buf, parseRoot(buf, spec), st, delta);
+    const r = resolveStep(buf, parseRoot(buf, spec), st, delta, ledger);
     if (!r) return { ok: false, ops: steps.length, failedOp: i };
     buf = buf.slice(0, r[0]) + st.replacement + buf.slice(r[1]);
     delta += st.replacement.length - (r[1] - r[0]);
+    ledger.push({ offset: r[0], rangeLength: r[1] - r[0], textLength: st.replacement.length, self: true });
   }
   return { ok: buf === after, ops: steps.length };
 };
@@ -181,11 +183,13 @@ for (const step of guide.steps) {
       let buf = targetText;
       let selfDelta = 0;
       let dead = false;
+      const ledger = [];
       for (const h of hunks) {
-        const r = resolveStepNoTree(buf, h, selfDelta);
+        const r = resolveStepNoTree(buf, h, selfDelta, ledger);
         if (!r) { dead = true; break; }
         buf = buf.slice(0, r[0]) + h.replacement + buf.slice(r[1]);
         selfDelta += h.replacement.length - (r[1] - r[0]);
+        ledger.push({ offset: r[0], rangeLength: r[1] - r[0], textLength: h.replacement.length, self: true });
       }
       if (dead || buf !== sandboxText) {
         failures.push(step.id);

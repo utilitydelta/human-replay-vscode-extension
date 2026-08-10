@@ -2,6 +2,8 @@ import * as vscode from "vscode";
 import { buildReplaySteps, asInsertion, ReplayStep } from "./sequence";
 import { lineDiffSteps, changedLineSpan, countLines } from "./lineDiff";
 import { resolveStep, resolveStepNoTree, shiftWindow } from "./replay";
+import { bookObserved, ObservedEdit } from "./ledger";
+import { explainInsertCollision } from "./proof";
 import { parseRoot } from "./diff";
 import { LanguageSpec, RUST } from "./language";
 import { revealCursor } from "./reveal";
@@ -48,7 +50,10 @@ interface Session {
   // so the retrospective squiggle never spans code the step never touched.
   retroOffset: number;
   retroLen: number;
-  lastServed?: { range: vscode.Range; text: string };
+  // `consumed` flips when noteChange matches the served edit's own change
+  // event, so a later foreign edit that happens to replay the same range and
+  // text can never ride the stale entry past the filter.
+  lastServed?: { range: vscode.Range; text: string; consumed?: boolean };
   // "dramatic" renders the change as a visual diff (old struck red, new ghosted
   // green) via decorations + a Tab keybinding, instead of the native ghost. Same
   // step model and live re-anchoring underneath; only the surface differs.
@@ -61,6 +66,10 @@ interface Session {
   // the buffer, tinted, awaiting Tab (keep) or Shift+Esc (remove). Deltas are
   // booked at write time, so the range tracks human edits via noteChange.
   pending?: { start: number; length: number };
+  // Every change the session observed — self and foreign — in arrival order,
+  // symbol-relative. The pure-insert legs transform their baked points through
+  // it; see ledger.ts for why a running sum can't do this job.
+  ledger: ObservedEdit[];
 }
 
 const DECORATION_CONTEXT = "humanReplay.diffDecorationActive";
@@ -84,7 +93,20 @@ export class DiffReplayController {
   // is, so VS Code's per-keystroke auto re-query doesn't flash the ghost.
   private diverged = false;
   private typing = false;
+  // Foreign bytes landed AT the armed step's point (the incident shape: Tab
+  // fed another provider's ghost into our anchor). The session pauses loud —
+  // nothing serves until the human ratifies or undoes and re-runs the step
+  // (the panel re-run rebuilds the diff from live bytes, so kept foreign
+  // bytes become explicit hunks). Divergence elsewhere keeps the quiet
+  // re-anchor flow; this latch is scoped to the armed point only.
+  private foreignPaused = false;
+  private lastInsertCollisionLog: string | undefined; // dedupe — resolve runs per query
   private accepting = false; // Tab re-entrancy latch: one decoration accept lands at a time
+  // A pending-insert edit is in flight: its change/selection events fire
+  // before symbolLen and `pending` are booked, so a resolve off that window
+  // reads a stale zero-length symbol and reports a spurious collision. No
+  // event path may resolve until the arm completes.
+  private arming = false;
   private settleTimer: ReturnType<typeof setTimeout> | undefined;
   // The human edited the current step's own line (its doomed range) — they're taking
   // over THIS hunk. A collision there must HOLD, never alarm: surfacing is reserved
@@ -204,7 +226,7 @@ export class DiffReplayController {
     let cleanParse: boolean;
     if (s.lineMode) {
       cleanParse = true;
-      r = resolveStepNoTree(symText, step, s.selfDelta);
+      r = resolveStepNoTree(symText, step, s.selfDelta, s.ledger);
     } else {
       const root = parseRoot(symText, s.spec);
       cleanParse = !root.hasError;
@@ -213,9 +235,21 @@ export class DiffReplayController {
       // survives our own accepts shifting sibling index paths (an added comment line
       // renumbers everything after it); the content leg survives the human's on-line
       // edit drifting the path to a valid-but-wrong node. All gone → collision.
-      r = resolveStep(symText, root, step, s.selfDelta);
+      r = resolveStep(symText, root, step, s.selfDelta, s.ledger);
     }
-    if (!r) return { kind: "collision", cleanParse };
+    if (!r) {
+      // A pure insert's collision names its failed legs — the incident's
+      // forensics were blind to which leg refused and why. Deduped: resolve
+      // runs on every provider query and settle.
+      if (step.originalText === "") {
+        const why = `[diff-replay] insert step ${s.index} collided: ${explainInsertCollision(symText, step, s.ledger)}`;
+        if (this.lastInsertCollisionLog !== why) {
+          this.lastInsertCollisionLog = why;
+          this.output.appendLine(why);
+        }
+      }
+      return { kind: "collision", cleanParse };
+    }
 
     if (surface === "insert") {
       const ins = asInsertion(step.oldText, step.replacement)!;
@@ -240,6 +274,7 @@ export class DiffReplayController {
     // Every decline logs while a native-surface step is armed: three "no
     // ghost, dead Tab" incidents were diagnosed blind because nothing said
     // whether VS Code even queried the provider.
+    if (this.foreignPaused) return undefined; // paused loud — nothing serves until the re-run
     if (this.typing) return undefined; // suppress the ghost mid-keystroke — settle re-offers
     if (this.ridesDecoration(s, step)) return undefined; // decoration steps never serve a native item
     const resolved = this.resolveCurrent(document);
@@ -282,11 +317,12 @@ export class DiffReplayController {
     const span = lineMode ? changedLineSpan(oldSrc, newSrc) : undefined;
     const retroOffset = span ? anchorOffset + span.offset : anchorOffset;
     const retroLen = span ? span.len : newSrc.length || oldSrc.length;
-    this.session = { uri: editor.document.uri, anchorOffset, symbolLen: oldSrc.length, selfDelta: 0, steps, index: 0, retrospective, dramatic, spec, lineMode, retroOffset, retroLen };
+    this.session = { uri: editor.document.uri, anchorOffset, symbolLen: oldSrc.length, selfDelta: 0, steps, index: 0, retrospective, dramatic, spec, lineMode, retroOffset, retroLen, ledger: [] };
     void vscode.commands.executeCommand("setContext", ACTIVE_CONTEXT, true);
     this.lastAcceptAt = undefined;
     this.diverged = false;
     this.typing = false;
+    this.foreignPaused = false;
     this.editedCurrentLine = false;
     this.clearSettle();
     const tally = steps.reduce(
@@ -331,7 +367,7 @@ export class DiffReplayController {
   async nudge(editor: vscode.TextEditor): Promise<boolean> {
     const s = this.session;
     const step = s?.steps[s.index];
-    if (!s || !step || this.typing) return false;
+    if (!s || !step || this.typing || this.foreignPaused) return false;
     if (editor.document.uri.toString() !== s.uri.toString()) return false;
     if (this.ridesDecoration(s, step)) return false; // decoration Tab owns that surface
     const resolved = this.resolveCurrent(editor.document);
@@ -375,8 +411,51 @@ export class DiffReplayController {
     const s = this.session;
     if (!s || e.document.uri.toString() !== s.uri.toString()) return;
     let humanEdited = false;
-    for (const c of e.contentChanges) {
-      if (c.text === s.lastServed?.text) continue; // our own accept/swap — symbolLen booked at accept
+    // A multi-change event reports every range in the same pre-event
+    // coordinates. Processed right-to-left, each change's offsets are still
+    // valid after the ones already handled (those all sit to its right), so
+    // the ledger reads as a plain chronological sequence of edits. A tie on
+    // rangeOffset (a replace and a zero-length insert at one position) takes
+    // the replace first: booked the other way round, the replace's range would
+    // read as consuming the inserted bytes and a point inside it could escape
+    // dirty (the hunt's 1e).
+    const changes = [...e.contentChanges].sort((a, b) => b.rangeOffset - a.rangeOffset || b.rangeLength - a.rangeLength);
+    for (const c of changes) {
+      // Our own accept/swap — symbolLen booked at accept. Matched POSITIONALLY
+      // (range + text), once: a foreign edit whose bytes merely equal the served
+      // text (the incident shape — another provider's ghost at our anchor) must
+      // book as foreign, or the offsets it shifts go untracked.
+      const served = s.lastServed;
+      const self = !!served && !served.consumed && c.text === served.text && c.range.isEqual(served.range);
+      // Book EVERY change — self and foreign alike, in arrival order. The
+      // pure-insert transform needs our accepts ordered against the foreign
+      // edits; selfDelta (a bare sum) can't say which came first.
+      const entry = bookObserved(s, { rangeOffset: c.rangeOffset, rangeLength: c.rangeLength, textLength: c.text.length }, self);
+      if (entry) s.ledger.push(entry);
+      if (self) {
+        served!.consumed = true;
+        continue;
+      }
+
+      // Foreign bytes AT the armed point pause the replay loud — the silent
+      // re-anchor here is where the live incident began (a model-invented
+      // ghost Tab-accepted into our anchor; the walk absorbed it and marched
+      // 175 bytes stale). Scoped three ways so the human still hacks freely:
+      // it takes 3+ NON-whitespace bytes in one change (a keystroke, an
+      // auto-close pair, Enter with auto-indent never qualify), touching the
+      // served range, and only while the human had NOT already taken this
+      // hunk over (a prior edit on the doomed line means the quiet
+      // editedCurrentLine flow owns it).
+      if (
+        !this.foreignPaused &&
+        !this.editedCurrentLine &&
+        served &&
+        c.text.replace(/\s/g, "").length > 2 &&
+        c.range.start.isBeforeOrEqual(served.range.end) &&
+        served.range.start.isBeforeOrEqual(c.range.end)
+      ) {
+        this.pauseOnForeign(c.text.length);
+      }
 
       // Keep the symbol window aligned with the human's insertion/deletion, or every
       // re-parse reads a buffer that is `delta` bytes off — a one-char insert truncates
@@ -422,6 +501,28 @@ export class DiffReplayController {
     this.settleTimer = undefined;
   }
 
+  // The 1a pause: latch, strip the armed visuals, mark the step blocked in the
+  // panel, and say what happened where the human is looking. The session stays
+  // (an undo may put every byte back); the panel re-run is the continue
+  // gesture either way.
+  private pauseOnForeign(byteCount: number): void {
+    this.foreignPaused = true;
+    this.output.appendLine(
+      `[diff-replay] ${byteCount} byte(s) landed at the armed point that the replay didn't serve — paused; ratify or undo, then re-run the step`,
+    );
+    const editor = vscode.window.activeTextEditor;
+    if (editor && editor.document.uri.toString() === this.session?.uri.toString()) this.clearDecorations(editor);
+    this.gestures.hide();
+    this.onCollision?.();
+    void vscode.window.setStatusBarMessage(
+      "Human Replay: bytes landed here that the replay didn't serve — ratify or undo before the walk continues",
+      8000,
+    );
+    void vscode.window.showWarningMessage(
+      "Human Replay: bytes landed at the armed step that the replay didn't serve (another ghost, a paste). Keep them or undo, then re-run the step to continue.",
+    );
+  }
+
   // Re-anchor the current step once typing settles. Re-offer WITHOUT yanking the
   // cursor — re-render the decoration in place (dramatic) or re-trigger the ghost
   // where the human is (native). A broken anchor either HOLDS (the human is mid-edit
@@ -432,6 +533,7 @@ export class DiffReplayController {
     this.settleTimer = setTimeout(() => {
       this.settleTimer = undefined;
       this.typing = false;
+      if (this.foreignPaused) return; // the pause outlives the settle — only the re-run resumes
       const editor = vscode.window.activeTextEditor;
       const s = this.session;
       if (!editor || !s || editor.document.uri.toString() !== s.uri.toString()) return;
@@ -506,6 +608,10 @@ export class DiffReplayController {
     const s = this.session;
     const step = s?.steps[s.index];
     if (!s || !step) return;
+    if (this.foreignPaused) {
+      this.output.appendLine("[diff-replay] skip held — paused on foreign bytes at the armed point; re-run the step to continue");
+      return;
+    }
     this.clearSettle();
     const removal = s.pending ? this.removePending(editor) : Promise.resolve();
     void removal
@@ -527,6 +633,7 @@ export class DiffReplayController {
     if (!s || !step) return;
     if (s.dramatic && this.surfaceOf(step) === "replace") return; // decoration persists until accept; no re-trigger
     if (this.typing) return; // mid-typing — the settle owns the re-offer
+    if (this.arming) return; // the arm's own edit moved the cursor — no resolve off the half-booked window
     const resolved = this.resolveCurrent(document);
     if (resolved.kind !== "ok") return; // a collision surfaces/holds via the drive path
     if (document.uri.toString() !== s.uri.toString()) return;
@@ -549,6 +656,7 @@ export class DiffReplayController {
   private renderCurrent(editor: vscode.TextEditor): void {
     const s = this.session;
     if (!s) return;
+    if (this.foreignPaused) return; // paused loud — the panel re-run resumes
     this.updateGestureHint();
     if (s.index >= s.steps.length) {
       this.complete(editor);
@@ -602,7 +710,13 @@ export class DiffReplayController {
     const s = this.session;
     if (!s) return;
     s.lastServed = { range: new vscode.Range(at, at), text };
-    const applied = await editor.edit((b) => b.insert(at, text));
+    this.arming = true;
+    let applied: boolean;
+    try {
+      applied = await editor.edit((b) => b.insert(at, text));
+    } finally {
+      this.arming = false;
+    }
     if (!applied) throw new Error("pending insert edit rejected");
     const start = editor.document.offsetAt(at);
     s.symbolLen += text.length;
@@ -724,6 +838,10 @@ export class DiffReplayController {
       this.output.appendLine("[diff-replay] tab: decoration context is stale (no session) — falling through to indent");
       void vscode.commands.executeCommand("setContext", DECORATION_CONTEXT, false);
       return false;
+    }
+    if (this.foreignPaused) {
+      this.output.appendLine("[diff-replay] tab held — paused on foreign bytes at the armed point; re-run the step to continue");
+      return true; // a deliberate wait, not a dead key
     }
     this.accepting = true;
     try {

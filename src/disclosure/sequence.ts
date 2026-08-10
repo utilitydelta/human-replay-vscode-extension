@@ -10,8 +10,16 @@
 
 import { diffSymbols, EditOp } from "./diff";
 import { LanguageSpec } from "./language";
+import { bakeInsertProofs, InsertProof } from "./proof";
 
 export interface ReplayStep extends EditOp {
+  /**
+   * Dual-sided context for a PURE insert (empty `originalText` — the one op
+   * shape with no bytes of its own to validate). Baked at build time from the
+   * two sources; every resolve leg must match both sides at its candidate
+   * point or the step collides instead of landing. See proof.ts.
+   */
+  proof?: InsertProof;
   /**
    * The op fits the native inline-completion `range` (begins and ends on one
    * line, replacement adds no newline). If false the controller routes it to the
@@ -52,7 +60,8 @@ export function asInsertion(oldText: string, replacement: string): { atEnd: bool
 /** Ordered, surface-classified replay steps for `diff(old, new)`. */
 export function buildReplaySteps(oldSrc: string, newSrc: string, spec?: LanguageSpec): ReplayStep[] {
   const { ops } = diffSymbols(oldSrc, newSrc, spec);
-  return ops
+  const steps = ops
     .map((op) => ({ ...op, singleLine: isSingleLine(oldSrc, op), originalText: oldSrc.slice(op.start, op.end) }))
     .sort((a, b) => a.start - b.start || a.end - b.end);
+  return bakeInsertProofs(steps, oldSrc, newSrc);
 }
