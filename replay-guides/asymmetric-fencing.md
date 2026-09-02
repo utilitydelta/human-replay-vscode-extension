@@ -30,6 +30,10 @@ small skew can no longer elect a second leader. A single-line replace inside the
 
 **Retrospective:** What happens to the lease if the clock drifts past the TTL before the follower checks?
 
+> **Answer:** It survives the drift: `must_fence` only fires once `now` passes the expiry plus `LEASE_GRACE`.
+> **Distractor:** It is fenced the moment the TTL reads expired, since the comparison against `now` has not moved.
+> **Distractor:** It renews itself, because `must_fence` resets `lease_expiry` before it returns false.
+
 **Before:**
 ```rust
 fn must_fence(&self, now: Timestamp) -> bool {
@@ -66,6 +70,10 @@ The control-flow skeleton is gone, so the classifier routes this to clear-and-re
 you read the new shape whole, not a pile of hunks.
 
 **Retrospective:** Does `any` short-circuit on the first expired peer the way the early `return true` did, or does it scan them all?
+
+> **Answer:** It short-circuits: `any` stops at the first peer that matches, like the `return true` did.
+> **Distractor:** It scans every peer, because `any` is a fold and folds do not stop early.
+> **Distractor:** It stops early only in a release build, where the optimiser is free to drop the rest of the scan.
 
 **Before:**
 ```rust

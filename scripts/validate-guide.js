@@ -41,7 +41,8 @@ fs.writeFileSync(
     `export { walkableSource } from "../src/disclosure/walk";\n` +
     `export { lineDiffSteps } from "../src/disclosure/lineDiff";\n` +
     `export { resolveStepNoTree } from "../src/disclosure/replay";\n` +
-    `export { planFileWalk, splitTrailing } from "../src/disclosure/fileWalk";\n`,
+    `export { planFileWalk, splitTrailing } from "../src/disclosure/fileWalk";\n` +
+    `export { isWeak, isNoneQuestion, gates } from "../src/retrospective/retrospective";\n`,
 );
 esbuild.buildSync({
   entryPoints: [entry],
@@ -51,7 +52,7 @@ esbuild.buildSync({
   platform: "node",
   external: ["tree-sitter", "tree-sitter-rust", "tree-sitter-c-sharp", "tree-sitter-typescript", "tree-sitter-python", "@tree-sitter-grammars/tree-sitter-markdown", "tree-sitter-html", "tree-sitter-css"],
 });
-const { parseGuide, extractSymbol, stepAlreadyLanded, classifyReplay, buildReplaySteps, resolveStep, parseRoot, languageForFile, planCreateInsertion, separatorToInsert, splitLeadingPad, walkableSource, lineDiffSteps, resolveStepNoTree, planFileWalk, splitTrailing } =
+const { parseGuide, extractSymbol, stepAlreadyLanded, classifyReplay, buildReplaySteps, resolveStep, parseRoot, languageForFile, planCreateInsertion, separatorToInsert, splitLeadingPad, walkableSource, lineDiffSteps, resolveStepNoTree, planFileWalk, splitTrailing, isWeak, isNoneQuestion, gates } =
   require(bundle);
 const cleanup = () => {
   fs.rmSync(bundle, { force: true });
@@ -106,6 +107,62 @@ console.log(`guide "${guide.feature}": ${guide.steps.length} steps, ${guide.inva
 const failures = [];
 const note = (step, status, detail = "") =>
   console.log(`  ${status.padEnd(9)} ${step.id.padEnd(5)} ${step.action.padEnd(11)} ${step.symbol}${detail ? ` — ${detail}` : ""}`);
+
+// ---------------------------------------------------------------------------
+// The retrospective audit. The gate is the step's thinking point, so a guide
+// whose steps do not gate is not finished — and the author should see that here
+// rather than at the human's keyboard.
+//
+// Both numbers below are design choices, not measurements. What IS measured is
+// the reason they exist: in machine-written multiple choice the correct answer
+// is reliably the longest and most qualified option, which turns the gate into
+// a shape-matching exercise. The cap and the spread take that tell away.
+const CHOICE_CAP = 100; // characters, label stripped, wrapped lines joined
+const CHOICE_SPREAD = 30; // characters between the longest and shortest choice
+const audit = { gated: 0, wired: 0, ungated: 0, weak: 0, overLength: 0 };
+for (const step of guide.steps) {
+  const q = step.retro.question ?? "";
+  const choices = step.retro.choices ?? [];
+  if (choices.length === 3) {
+    // `gates()` IS the runtime decision — called, never re-derived, or the
+    // validator drifts from the thing it exists to predict. The branches below
+    // only explain a refusal it has already made.
+    if (!gates(step.retro)) {
+      // A confidence probe on the agent that wrote the guide, not on the human:
+      // one that could not say why the code exists here does not get to write
+      // its answer key. The way through is a specific question, not a shorter one.
+      const reason =
+        q.trim() === ""
+          ? [null, `distractors with no **Retrospective:** question — nothing to ask`]
+          : isNoneQuestion(q)
+            ? ["wired", `\`none\` question carries distractors — a step wired off cannot gate`]
+            : ["weak", `weak question with distractors — "${q}" is generic, so the step will not gate at runtime`];
+      if (reason[0]) audit[reason[0]]++;
+      failures.push(step.id);
+      note(step, "FAIL", reason[1]);
+      continue;
+    }
+    const lengths = choices.map((c) => c.text.length);
+    const longest = Math.max(...lengths);
+    const spread = longest - Math.min(...lengths);
+    if (longest > CHOICE_CAP || spread > CHOICE_SPREAD) {
+      audit.overLength++;
+      failures.push(step.id);
+      note(
+        step,
+        "FAIL",
+        `choices ${longest > CHOICE_CAP ? `run to ${longest} chars (cap ${CHOICE_CAP})` : `sit ${spread} chars apart (max ${CHOICE_SPREAD})`} — ` +
+          `the longest option reads as the answer`,
+      );
+      continue;
+    }
+    audit.gated++;
+    continue;
+  }
+  if (isNoneQuestion(q) || q.trim() === "") audit.wired++;
+  else if (isWeak(q)) audit.weak++;
+  else audit.ungated++;
+}
 
 // The sequential dry-run state: target texts as they stand after the steps
 // validated so far. Reads fall through to disk for untouched files.
@@ -297,5 +354,12 @@ for (const rel of createdFiles) {
 }
 
 cleanup();
-console.log(`\n${failures.length === 0 ? "PASS" : "FAIL"}: ${guide.steps.length - failures.length}/${guide.steps.length} steps validate${failures.length ? ` — fix: ${failures.join(", ")}` : ""}`);
-process.exit(failures.length === 0 ? 0 : 1);
+console.log(
+  `\nretrospectives: ${audit.gated} gated, ${audit.wired} wired (\`none\`), ${audit.ungated} ungated, ` +
+    `${audit.weak} weak, ${audit.overLength} over-length`,
+);
+// A step can fail twice (its answer key AND its bytes); the human counts steps,
+// not failure reasons.
+const failed = [...new Set(failures)];
+console.log(`${failed.length === 0 ? "PASS" : "FAIL"}: ${guide.steps.length - failed.length}/${guide.steps.length} steps validate${failed.length ? ` — fix: ${failed.join(", ")}` : ""}`);
+process.exit(failed.length === 0 ? 0 : 1);

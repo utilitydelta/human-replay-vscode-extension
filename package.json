@@ -2,7 +2,7 @@
   "name": "human-replay",
   "displayName": "Human Replay",
   "description": "Replay sandboxed AI work into your real branch one Tab at a time. Guide-driven and model-free.",
-  "version": "1.2.0",
+  "version": "2.0.0",
   "publisher": "utilitydelta",
   "license": "Apache-2.0",
   "icon": "media/icon.png",
@@ -72,6 +72,11 @@
         "command": "humanReplay.continueDisclosure",
         "title": "Continue Replay (after editing)",
         "category": "Human Replay"
+      },
+      {
+        "command": "humanReplay.holdHere",
+        "title": "Stay Here (stop the replay moving on)",
+        "category": "Human Replay"
       }
     ],
     "views": {
@@ -120,9 +125,24 @@
         "when": "editorTextFocus && humanReplay.patchPauseActive && !suggestWidgetVisible && !inlineSuggestionVisible"
       },
       {
+        "command": "humanReplay.runNextStep",
+        "key": "tab",
+        "when": "editorTextFocus && humanReplay.dwellActive && !suggestWidgetVisible && !inlineSuggestionVisible"
+      },
+      {
+        "command": "humanReplay.runNextStep",
+        "key": "tab",
+        "when": "editorTextFocus && humanReplay.gateActive && !suggestWidgetVisible && !inlineSuggestionVisible"
+      },
+      {
         "command": "humanReplay.cancelDisclosure",
         "key": "escape",
         "when": "editorTextFocus && (humanReplay.disclosureActive || humanReplay.diffDecorationActive || humanReplay.rewriteStrikeActive) && !inlineSuggestionVisible && !suggestWidgetVisible"
+      },
+      {
+        "command": "humanReplay.holdHere",
+        "key": "escape",
+        "when": "editorTextFocus && humanReplay.dwellActive && !suggestWidgetVisible && !inlineSuggestionVisible"
       }
     ],
     "menus": {
@@ -165,6 +185,18 @@
           "type": "string",
           "default": "",
           "description": "Absolute path to the sandbox tree the guide replays from (the 'after' state). A lean guide carries no code fences; the runner resolves each step's After bytes from <sandboxRoot>/<step file> by symbol. Before bytes come from the open workspace file."
+        },
+        "humanReplay.dwellSeconds": {
+          "type": "number",
+          "default": 3,
+          "minimum": 0,
+          "description": "How long the replay holds on the code a step just landed before flowing into the next one. Tab cuts the hold short, Esc parks the replay where it is. 0 restores the old instant flow. A gated step never dwells: its question already stops the replay with the code on screen."
+        },
+        "humanReplay.gateLockoutSeconds": {
+          "type": "number",
+          "default": 5,
+          "minimum": 0,
+          "description": "How long the retrospective gate locks after a wrong pick. A read window, not a penalty: raising it does not price out guessing (a guesser expects one lockout), it just makes an honest reader alt-tab away."
         },
         "humanReplay.sandboxParent": {
           "type": "string",

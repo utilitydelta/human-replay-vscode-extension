@@ -9,12 +9,25 @@ import { findItemByName, leadingTriviaStart, walkableSource, SyntaxNode } from "
 import { planCreateInsertion, separatorToInsert, splitLeadingPad } from "./insertion";
 import { FileSegment, planFileWalk, resumeIndex, splitTrailing } from "./fileWalk";
 import { patchSummary } from "./lineDiff";
-import { Retrospective } from "../retrospective/retrospective";
+import { Retrospective, gates } from "../retrospective/retrospective";
+import { PendingGate, RetroGate, gateKey } from "../retrospective/gate";
+import { DwellGate } from "./dwell";
 import { ProgramCounter, StepStatus } from "./programCounter";
 import { extractSymbol, stepAlreadyLanded } from "./resume";
 import { LanguageSpec, languageForFile } from "./language";
 
 export { StepStatus };
+
+/** The surface the gate renders through — a QuickPick in the extension, and
+ *  nothing at all in a headless test. The runner owns the state machine and
+ *  the door; the host only draws and reports picks. */
+export interface RetroGateHost {
+  /** Show or re-show the pending gate. Called on every run gesture while the
+   *  gate stands, so it must be idempotent. */
+  show(gate: RetroGate, step: ReplayStep): void;
+  /** Tear the picker down without passing the gate (skip, cancel, unload). */
+  hide(): void;
+}
 
 // Drives a loaded replay guide: holds the parsed guide and the program counter
 // (the step the human is on), opens the step's target file, parks the cursor on
@@ -36,10 +49,6 @@ export class GuideRunner {
   private guide: ReplayGuide | undefined;
   private readonly pc = new ProgramCounter();
   private onChange?: () => void; // fired when state changes, so the panel refreshes
-  // Wipes every retrospective diagnostic across all files. Called when the human
-  // leaves a phase, so the last phase's squiggles and invariants don't bleed into
-  // the next — each phase reviews its own, then the slate clears.
-  private clearAllDiagnostics?: () => void;
   // The sandbox this session replays from. Set by the Start Replay picker; the
   // humanReplay.sandboxRoot config is the fallback so a hand-configured run
   // still works.
@@ -53,12 +62,38 @@ export class GuideRunner {
   // momentum never arms one; it pops in as this pause instead, and an explicit
   // run is the ratifying gesture (the human decides, invariant 4).
   private pausedPatch: { index: number; rel: string; detail: string } | undefined;
+  // The retrospective gate standing between a completed step and the next one.
+  // Set the moment the step's last walk lands and cleared only by a pass (or by
+  // skipping the step outright); every run gesture in between re-shows it. This
+  // is the door: while it is set, `flowInto` has not been called.
+  private pendingGate: { gate: RetroGate; index: number } | undefined;
+  // The step whose gate was just passed, waiting on the surface's beat.
+  private passedGate: number | undefined;
+  // The beat between a step landing and the jump to the next one. Only the
+  // momentum path holds: a gated step already stops on its picker with the code
+  // still on screen, and a skip or an already-landed step never showed the
+  // human anything to read.
+  private readonly dwellGate = new DwellGate(
+    {
+      now: () => Date.now(),
+      after: (ms, fn) => setTimeout(fn, ms),
+      cancel: (t) => clearTimeout(t as ReturnType<typeof setTimeout>),
+    },
+    (next) => {
+      this.changed();
+      this.output.appendLine(`[dwell] elapsed — flowing into step ${this.guide?.steps[next]?.id ?? next}`);
+      void this.runStep(next);
+    },
+  );
+  private gateHost: RetroGateHost | undefined;
   // A create-file step's walk in flight: the segment plan and the position in
   // it. Each segment is one engine run (walk or block ghost); completeCurrent
   // chains the next until the plan is spent, then the step itself completes.
   private fileWalk:
     | { stepId: string; at: number; segments: FileSegment[]; uri: vscode.Uri; spec: LanguageSpec | undefined; retro: Retrospective }
     | undefined;
+
+  private retroSurface: ((retro: Retrospective, index: number) => void) | undefined;
 
   constructor(
     private readonly output: vscode.OutputChannel,
@@ -69,9 +104,17 @@ export class GuideRunner {
   setChangeHandler(handler: () => void): void {
     this.onChange = handler;
   }
-  /** How the runner wipes every retrospective diagnostic when a phase ends. */
-  setDiagnosticClearer(clear: () => void): void {
-    this.clearAllDiagnostics = clear;
+
+  /** The picker the gate renders through. Injected so the runner stays testable
+   *  and the vscode-coupled surface stays one file (gateSurface.ts). */
+  setGateHost(host: RetroGateHost): void {
+    this.gateHost = host;
+  }
+
+  /** How the ungated step's retrospective reaches the human: one toast with a
+   *  "Show step" button. Injected for the same reason as the gate host. */
+  setRetrospectiveSurface(surface: (retro: Retrospective, index: number) => void): void {
+    this.retroSurface = surface;
   }
   private changed(): void {
     this.onChange?.();
@@ -89,6 +132,19 @@ export class GuideRunner {
   skip(i: number): void {
     const wasInFlight = this.pc.inFlightIndex === i;
     if (this.pausedPatch?.index === i) this.pausedPatch = undefined;
+    // Skipping the step the gate stands on is the human deciding not to answer.
+    // The door opens; nothing else does.
+    // Skipping the step the gate stands on is the human deciding not to answer.
+    // The step itself is already DONE (the gate parks after the counter marks
+    // it), so this is not a skip in the counter's sense: marking it skipped
+    // would leave the same index in both `done` and `skipped` and persist that
+    // to workspaceState. Open the door and flow, the way a pass does.
+    if (this.pendingGate?.index === i) {
+      this.clearGate("step skipped");
+      this.changed();
+      this.flowInto(i);
+      return;
+    }
     this.pc.skip(i);
     if (wasInFlight) {
       this.disclosure.cancel();
@@ -111,6 +167,7 @@ export class GuideRunner {
    *  human's back. The step keeps its status for a re-run. */
   cancelInFlight(): void {
     this.fileWalk = undefined;
+    this.clearGate("replay cancelled");
     if (this.pc.cancelInFlight()) this.changed();
   }
 
@@ -193,7 +250,224 @@ export class GuideRunner {
     this.saveStepDoc(finished).catch((e) => {
       this.output.appendLine(`[guide] step save failed: ${e instanceof Error ? e.message : String(e)}`);
     });
-    this.flowInto(finished);
+    this.gateOrFlow(finished);
+  }
+
+  // The one place a walk finishing turns into the next step — and so the one
+  // place the gate can stand. The other `flowInto` callers (skip, resume,
+  // already-landed, already-matching) are not walks finishing, so they bypass
+  // the gate by construction rather than by a flag.
+  private gateOrFlow(finished: number): void {
+    const step = this.guide?.steps[finished];
+    if (!step) {
+      this.flowInto(finished);
+      return;
+    }
+    const retro = step.retro;
+    if (retro.choices.length === 3 && !gates(retro)) {
+      // Parsed an answer key but refused to gate: the only way here is a weak
+      // or wired-off question. Say which — a silent ungated step reads as a bug
+      // to whoever wrote the distractors.
+      const why =
+        retro.question.trim() === ""
+          ? "there is no question to ask"
+          : /^\s*none\b/i.test(retro.question)
+            ? "the question is wired off (`none`)"
+            : "the question is weak (a confidence probe on the guide's author, not the human)";
+      this.output.appendLine(`[gate] step ${step.id} not gated — ${why}`);
+    }
+    if (!gates(retro)) {
+      this.retroSurface?.(retro, finished);
+      // The only flow that dwells. A gated step does not need one: its picker
+      // already stops the replay with the landed code still on screen behind
+      // it. This is the run of ungated steps between two gates, which is where
+      // momentum used to scroll the bytes away before they were read.
+      this.flowInto(finished, true);
+      return;
+    }
+    this.armGate(finished, undefined);
+  }
+
+  // Stand the gate up (fresh, or restored from a reload). Nothing flows until
+  // the human picks the answer.
+  private armGate(index: number, pending: PendingGate | undefined): void {
+    const step = this.guide?.steps[index];
+    if (!step) return;
+    const lockoutMs =
+      Math.max(0, vscode.workspace.getConfiguration("humanReplay").get<number>("gateLockoutSeconds", 5)) * 1000;
+    const opts = {
+      stepId: step.id,
+      question: step.retro.question,
+      choices: step.retro.choices,
+      lockoutMs,
+      now: () => Date.now(),
+    };
+    const gate = pending ? RetroGate.restore(pending, opts) : new RetroGate(opts);
+    this.pendingGate = { gate, index };
+    this.changed();
+    this.output.appendLine(
+      `[gate] step ${step.id} shown — ${gate.order.length} choices${pending ? `, restored with ${gate.wrongCount} wrong pick(s)` : ""}`,
+    );
+    this.gateHost?.show(gate, step);
+  }
+
+  /** The gate standing between the replay and the next step, for the status bar
+   *  and the `humanReplay.gateActive` context key. */
+  get gateStep(): ReplayStep | undefined {
+    const p = this.pendingGate;
+    return p ? this.guide?.steps[p.index] : undefined;
+  }
+
+  /** Any run gesture while the gate stands re-shows it instead of running —
+   *  status bar, tree click, Run Next Step, Tab. Returns true when it took the
+   *  gesture, so the caller does nothing else. */
+  reshowGate(): boolean {
+    const p = this.pendingGate;
+    if (!p) return false;
+    const step = this.guide?.steps[p.index];
+    if (!step) return false;
+    // Ground truth outranks the gate. A human who Esc'd the question, undid the
+    // bytes and came back to re-run the step is not dodging it — the gate is
+    // asking about code that is no longer there. Drop it, put the step back to
+    // pending, and let the run through. Same verdict the resume path derives on
+    // a fresh Start Replay; the difference was that nothing re-read the files
+    // mid-session.
+    if (this.stepStillLanded(p.index) === false) {
+      this.clearGate("the bytes it gated are gone from the target");
+      this.pc.markPending(p.index);
+      this.changed();
+      this.output.appendLine(`[guide] step ${step.id}: rolled back under the gate — pending again, re-running`);
+      return false;
+    }
+    this.output.appendLine(`[gate] step ${step.id} re-shown (run gesture while the gate stands)`);
+    this.gateHost?.show(p.gate, step);
+    return true;
+  }
+
+  /** The human picked choice `index` in the gate's shuffled order. Returns the
+   *  machine's verdict so the surface can mark the item; a pass flows into the
+   *  next step exactly as a walk finishing used to. */
+  pickGate(index: number): ReturnType<RetroGate["pick"]> | undefined {
+    const p = this.pendingGate;
+    if (!p) return undefined;
+    const step = this.guide?.steps[p.index];
+    const verdict = p.gate.pick(index);
+    const id = step?.id ?? p.index;
+    if (verdict.kind === "wrong") {
+      this.output.appendLine(
+        `[gate] step ${id} wrong pick "${p.gate.order[index]?.text}" — locked for ${Math.round(p.gate.lockoutRemainingMs / 1000)}s`,
+      );
+      this.changed();
+    } else if (verdict.kind === "ignored") {
+      this.output.appendLine(`[gate] step ${id} accept ignored (${verdict.reason})`);
+    } else {
+      this.output.appendLine(
+        `[gate] step ${id} passed after ${verdict.wrongCount} wrong in ${verdict.elapsedMs}ms`,
+      );
+      this.pendingGate = undefined;
+      // The door is open, but nothing moves yet. The surface holds the check
+      // mark for a beat and calls flowAfterGate when it is down: opening the
+      // next step's editor UNDER a QuickPick that has ignoreFocusOut set parks
+      // a cursor and triggers a ghost on an editor that does not have focus,
+      // which is how this repo earned its stray-indent scars.
+      this.passedGate = p.index;
+      this.changed();
+      if (!this.gateHost) this.flowAfterGate(); // headless: no beat to wait for
+    }
+    return verdict;
+  }
+
+  // Hold in front of the next step so the bytes that just landed stay on screen
+  // long enough to read. Tab cuts it short, Esc parks it indefinitely.
+  private holdBeforeNext(next: number): boolean {
+    // The dwell exists because the replay TAKES YOU AWAY from what you just
+    // read. When it doesn't — the next step is a method inside the impl block
+    // that just landed, or the symbol below it, still on screen — there is
+    // nothing to hold and the hold is pure friction.
+    if (this.nextStepIsOnScreen(next)) {
+      this.output.appendLine(`[dwell] no hold — step ${this.guide?.steps[next]?.id ?? next} is already on screen`);
+      return false;
+    }
+    const seconds = vscode.workspace.getConfiguration("humanReplay").get<number>("dwellSeconds", 3);
+    if (!this.dwellGate.hold(next, Math.max(0, seconds) * 1000)) return false;
+    this.changed();
+    this.output.appendLine(
+      `[dwell] holding ${seconds}s on what landed before step ${this.guide?.steps[next]?.id ?? next} — Tab to move on, Esc to stay`,
+    );
+    return true;
+  }
+
+  // Will running `next` move the human's eyes? Different file, yes. Same file,
+  // only if its symbol sits outside what the editor is showing right now.
+  //
+  // The unknown case — same file, symbol not in the target yet — reads as "on
+  // screen", i.e. no hold. That is a fresh create, and a create lands either
+  // inside the container just built or at the end of the file the human is
+  // already looking at. Guessing wrong here costs a pause, not a byte.
+  private nextStepIsOnScreen(next: number): boolean {
+    const step = this.guide?.steps[next];
+    if (!step) return false;
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) return false;
+    const rel = step.file.split(":")[0];
+    if (!rel || !editor.document.uri.fsPath.endsWith(rel)) return false;
+    const spec = languageForFile(rel);
+    if (!spec) return true;
+    try {
+      const text = editor.document.getText();
+      const node = findItemByName(parseRoot(text, spec), text, step.symbol, spec);
+      if (!node) return true;
+      const line = editor.document.positionAt(node.startIndex).line;
+      return editor.visibleRanges.some((r) => line >= r.start.line && line <= r.end.line);
+    } catch {
+      return true;
+    }
+  }
+
+  /** What the status bar renders while the replay is holding or parked. */
+  get dwellInfo(): { mode: "holding" | "parked"; next: number; remainingMs: number; stepId: string } | undefined {
+    const info = this.dwellGate.info;
+    if (!info) return undefined;
+    return { ...info, stepId: this.guide?.steps[info.next]?.id ?? String(info.next) };
+  }
+
+  /** Esc during the hold: stop the clock and stay on this code. The replay is
+   *  still armed, so Tab continues to mean "continue" rather than "indent". */
+  parkDwell(): boolean {
+    if (!this.dwellGate.park()) return false;
+    this.changed();
+    this.output.appendLine(`[dwell] parked — the replay waits here until you ask for the next step`);
+    return true;
+  }
+
+  /** The check mark is down. Flow into the next step exactly as a walk
+   *  finishing used to. Idempotent: only the first call after a pass flows. */
+  flowAfterGate(): void {
+    const from = this.passedGate;
+    if (from === undefined) return;
+    this.passedGate = undefined;
+    this.flowInto(from);
+  }
+
+  /** Esc: the picker goes away, the gate does not. The status bar keeps saying
+   *  so and the next run gesture brings it back with the same order. */
+  dismissGate(): void {
+    const p = this.pendingGate;
+    if (!p) return;
+    this.output.appendLine(`[gate] step ${this.guide?.steps[p.index]?.id ?? p.index} dismissed — re-arms on the next run gesture`);
+    this.changed();
+  }
+
+  /** Drop the gate entirely: the step was skipped, the session cancelled, or the
+   *  guide unloaded. The context key goes with it. */
+  private clearGate(reason: string): void {
+    this.passedGate = undefined;
+    this.dwellGate.clear();
+    if (!this.pendingGate) return;
+    this.output.appendLine(`[gate] step ${this.guide?.steps[this.pendingGate.index]?.id ?? this.pendingGate.index} gate dropped — ${reason}`);
+    this.pendingGate = undefined;
+    this.gateHost?.hide();
+    this.changed();
   }
 
   private async saveStepDoc(index: number): Promise<void> {
@@ -240,7 +514,7 @@ export class GuideRunner {
   // the invariants and the retrospective, reviews what landed, and continues
   // with an explicit gesture (the message button, the status bar, the tree).
   // At scale a phase is a chapter, not a speed bump (feedback.md #2).
-  private flowInto(fromIndex: number): void {
+  private flowInto(fromIndex: number, dwell = false): void {
     const next = this.pc.next();
     if (next >= this.steps.length) {
       if (this.pc.isComplete) {
@@ -266,7 +540,7 @@ export class GuideRunner {
         .then((choice) => {
           if (choice !== "Continue replay") return;
           const at = this.pc.next();
-          if (at < this.steps.length) void this.runStep(at, () => {});
+          if (at < this.steps.length) void this.runStep(at);
         });
       return;
     }
@@ -274,8 +548,11 @@ export class GuideRunner {
       this.pauseBeforePatch(next, to);
       return;
     }
+    // The one place momentum runs free, and so the one place worth holding.
+    // Everything above this line is already a stop the human has to ratify.
+    if (dwell && this.holdBeforeNext(next)) return;
     this.output.appendLine(`[guide] flowing into step ${to?.id ?? next}`);
-    void this.runStep(next, () => {});
+    void this.runStep(next);
   }
 
   // Momentum stops at a Patch step the way it stops at a phase boundary. Its
@@ -290,7 +567,7 @@ export class GuideRunner {
     const live = this.readLiveFile(rel);
     const sandbox = this.readSandboxFile(step);
     if (live !== undefined && sandbox !== undefined && live === sandbox) {
-      void this.runStep(index, () => {});
+      void this.runStep(index);
       return;
     }
     const summary = live !== undefined && sandbox !== undefined ? patchSummary(live, sandbox) : undefined;
@@ -307,7 +584,7 @@ export class GuideRunner {
         "Skip step",
       )
       .then((choice) => {
-        if (choice === "Review hunks") void this.runStep(index, () => {});
+        if (choice === "Review hunks") void this.runStep(index);
         else if (choice === "Skip step") this.skip(index);
       });
   }
@@ -365,6 +642,7 @@ export class GuideRunner {
     for (const i of skipped) this.pc.skip(i);
     this.pausedBefore = undefined;
     this.pausedPatch = undefined;
+    this.clearGate("resynced from files");
     const landed = this.deriveLanded(workspaceRoot);
     this.changed();
     this.output.appendLine(`[guide] resynced from files — ${landed} step(s) read as landed, ${skipped.length} skip(s) kept`);
@@ -376,6 +654,7 @@ export class GuideRunner {
    *  the next load — ending a session never loses position. */
   unload(): void {
     this.fileWalk = undefined;
+    this.clearGate("replay session ended");
     this.pausedBefore = undefined;
     this.pausedPatch = undefined;
     this.guide = undefined;
@@ -387,6 +666,9 @@ export class GuideRunner {
 
   load(md: string): ReplayGuide {
     const guide = parseGuide(md); // throws loud on a malformed guide (invariant 3)
+    // A gate standing over the OLD guide indexes steps that no longer exist.
+    // The saved snapshot re-arms it by step id if this is the same guide.
+    this.clearGate("a different guide loaded");
     this.guide = guide;
     this.pc.reset(guide.steps.length);
     this.changed();
@@ -406,14 +688,33 @@ export class GuideRunner {
     return this.sessionSandboxRoot ?? (configured || undefined);
   }
 
-  /** The persistable position (done + skipped) for workspaceState. */
-  snapshot(): { done: number[]; skipped: number[] } {
-    return this.pc.snapshot();
+  /** The persistable position (done + skipped + a standing gate) for
+   *  workspaceState. The gate rides beside the counter because a reload must
+   *  re-arm it even though the bytes read the step as done. */
+  snapshot(): { done: number[]; skipped: number[]; gate?: PendingGate } {
+    return { ...this.pc.snapshot(), gate: this.pendingGate?.gate.serialize() };
   }
 
-  /** Merge a persisted position back in (union with live progress). */
-  restore(s: { done?: number[]; skipped?: number[] }): void {
+  /** Merge a persisted position back in (union with live progress). A saved
+   *  gate re-arms against the step id it names — the guide is canonical, so the
+   *  choices and the shuffle rebuild from it rather than from the snapshot. */
+  restore(s: { done?: number[]; skipped?: number[]; gate?: PendingGate }): void {
     this.pc.restore(s);
+    if (s.gate) {
+      const index = this.steps.findIndex((step) => step.id === s.gate!.stepId);
+      if (index < 0 || !gates(this.steps[index].retro)) {
+        this.output.appendLine(`[gate] saved gate for step ${s.gate.stepId} no longer gates — dropped`);
+      } else if (s.gate.key !== gateKey(this.steps[index].retro.question, this.steps[index].retro.choices)) {
+        // The guide was edited under a standing gate. The saved wrong picks are
+        // indices into a shuffle the old question seeded, so restoring them
+        // would eliminate whichever choice now sits in those slots — the answer
+        // included. Re-arm from the guide instead; the guide is canonical.
+        this.output.appendLine(`[gate] step ${s.gate.stepId}: answer key changed under the saved gate — re-armed fresh`);
+        this.armGate(index, undefined);
+      } else {
+        this.armGate(index, s.gate);
+      }
+    }
     this.changed();
   }
 
@@ -606,6 +907,59 @@ export class GuideRunner {
 
   // Extract a named item's exact bytes from `text` by name — fn, struct, enum, const,
   // trait, type alias, static, macro, module (model-free, tree-sitter).
+  // Is this step's outcome still in the target? The same comparison
+  // `deriveLanded` makes on load, for one step, against the live buffer rather
+  // than only disk. `undefined` means no verdict (no language, no sandbox, an
+  // unreadable file) — the caller must not treat that as "gone".
+  private stepStillLanded(index: number): boolean | undefined {
+    const step = this.guide?.steps[index];
+    if (!step) return undefined;
+    const rel = step.file.split(":")[0];
+    const wholeFile = step.action === "create-file" || step.action === "patch";
+    const spec = languageForFile(rel);
+    if (!wholeFile && !spec) return undefined;
+    const live = this.readLiveFile(rel);
+    if (live === undefined) return step.action === "delete" ? undefined : false;
+    const target = wholeFile ? live : this.symbolFrom(live, step.symbol, spec!);
+    // A skeleton create-file is landed while the target still begins with it —
+    // later symbol steps grow the file past the skeleton.
+    if (step.action === "create-file" && step.after !== undefined) {
+      return target !== undefined && target.startsWith(step.after);
+    }
+    const after = wholeFile ? this.readSandboxFile(step) : (step.after ?? this.readSandboxSymbol(step, spec!));
+    if (after === undefined && step.action !== "delete") return undefined;
+    return stepAlreadyLanded(step.action, target, after);
+  }
+
+  /** Open the code a step landed and put the cursor on its symbol — the gate's
+   *  "open code" button. Parse-located, not text-searched: an authored `:line`
+   *  goes stale the moment an earlier step moves the file, so it is only the
+   *  fallback for a file no language here parses. */
+  async revealStepCode(index: number): Promise<void> {
+    const step = this.guide?.steps[index];
+    if (!step) return;
+    const [rel, lineStr] = step.file.split(":");
+    const uris = rel ? await vscode.workspace.findFiles(rel) : [];
+    if (uris.length === 0) {
+      vscode.window.showWarningMessage(`Human Replay: "${step.file}" isn't in the workspace.`);
+      return;
+    }
+    const doc = await vscode.workspace.openTextDocument(uris[0]);
+    const spec = languageForFile(rel);
+    let pos = new vscode.Position(lineStr ? Math.max(0, Number(lineStr) - 1) : 0, 0);
+    if (spec) {
+      try {
+        const text = doc.getText();
+        const node = findItemByName(parseRoot(text, spec), text, step.symbol, spec);
+        if (node) pos = doc.positionAt(leadingTriviaStart(text, node.startIndex, spec));
+      } catch (e) {
+        this.output.appendLine(`[gate] open code: ${step.symbol} not locatable — ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    await this.parkCursor(doc, pos);
+    this.output.appendLine(`[gate] step ${step.id} open code — ${rel}:${pos.line + 1}`);
+  }
+
   private symbolFrom(text: string, symbol: string, spec: LanguageSpec): string | undefined {
     return extractSymbol(text, symbol, spec);
   }
@@ -849,9 +1203,29 @@ export class GuideRunner {
    *  Never throws — callers include fire-and-forget auto-advance, so an engine
    *  error marks the step blocked and surfaces instead of vanishing as an
    *  unhandled rejection with the counter stuck in-flight. */
-  async runStep(index: number, clearDiagnostics: (doc: vscode.TextDocument) => void): Promise<void> {
+  async runStep(index: number): Promise<void> {
+    // The gate holds the door against MOMENTUM, not against navigation. A tree
+    // click names a step: name the gated one and the question is what you asked
+    // for; name another and you have decided where to go, which outranks the
+    // gate (invariant 4, the human decides). The continue gestures — Tab, the
+    // status bar, Run Next Step — still route through `runCurrent`, which
+    // re-shows, because "move on" is exactly what the gate stands in front of.
+    const standing = this.pendingGate;
+    if (standing && standing.index !== index) {
+      const gated = this.guide?.steps[standing.index];
+      this.clearGate(`step ${this.guide?.steps[index]?.id ?? index} was run instead — ${gated?.id ?? standing.index} left unanswered`);
+    } else if (this.reshowGate()) {
+      return;
+    }
+    // A run gesture during the hold is "I have read it, move" — take the dwell
+    // so its timer can never fire a second run at the same step.
+    if (this.dwellGate.info) {
+      const held = this.dwellGate.take();
+      this.changed();
+      this.output.appendLine(`[dwell] cut short by a run gesture — step ${this.guide?.steps[held ?? index]?.id ?? index}`);
+    }
     try {
-      await this.runStepUnguarded(index, clearDiagnostics);
+      await this.runStepUnguarded(index);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       this.output.appendLine(`[guide] step ${this.guide?.steps[index]?.id ?? index} failed: ${msg}`);
@@ -860,7 +1234,7 @@ export class GuideRunner {
     }
   }
 
-  private async runStepUnguarded(index: number, clearDiagnostics: (doc: vscode.TextDocument) => void): Promise<void> {
+  private async runStepUnguarded(index: number): Promise<void> {
     const step = this.guide?.steps[index];
     if (!step) {
       vscode.window.showWarningMessage("Human Replay: no such step in the loaded guide.");
@@ -868,15 +1242,10 @@ export class GuideRunner {
     }
     if (this.pausedBefore !== undefined) {
       this.pausedBefore = undefined; // any run is the continue gesture
-      // Leaving the phase: clear the phase's retrospectives so the human enters
-      // the next one on a clean slate, not staring at the last phase's squiggles.
-      this.clearAllDiagnostics?.();
       this.changed();
     }
     if (this.pausedPatch !== undefined) {
-      // Any run ratifies the patch pause too — but mid-phase, so the phase's
-      // retrospectives stay up.
-      this.pausedPatch = undefined;
+      this.pausedPatch = undefined; // any run ratifies the patch pause too
       this.changed();
     }
     // A manual run while a step is mid-flight replaces it — tear the live
@@ -946,7 +1315,6 @@ export class GuideRunner {
     }
 
     this.pc.begin(index); // the walk advances the counter when it completes, not now
-    clearDiagnostics(editor.document);
     this.changed();
     this.output.appendLine(
       `[guide] step ${step.id} (${index + 1}/${this.steps.length}) ${step.action} ${step.symbol}`,
@@ -999,7 +1367,8 @@ export class GuideRunner {
   }
 
   /** Run the next unrun step; tells the human when none remain. */
-  async runCurrent(clearDiagnostics: (doc: vscode.TextDocument) => void): Promise<void> {
+  async runCurrent(): Promise<void> {
+    if (this.reshowGate()) return;
     const next = this.pc.next();
     if (next >= this.steps.length) {
       vscode.window.showInformationMessage(
@@ -1007,6 +1376,6 @@ export class GuideRunner {
       );
       return;
     }
-    await this.runStep(next, clearDiagnostics);
+    await this.runStep(next);
   }
 }

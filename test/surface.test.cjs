@@ -80,6 +80,8 @@ const REMOVED_CONFIG = [
 // The guide-driven settings the replay cannot run without: where the guide is,
 // where the sandbox bytes come from, where Start Replay browses for sandboxes.
 const KEPT_CONFIG = [
+  "humanReplay.dwellSeconds",
+  "humanReplay.gateLockoutSeconds",
   "humanReplay.guidePath",
   "humanReplay.sandboxParent",
   "humanReplay.sandboxRoot",
@@ -192,9 +194,60 @@ test("configuration keeps exactly the guide-driven settings", () => {
   for (const key of REMOVED_CONFIG) {
     assert.ok(!configKeys.includes(key), `setting still present: ${key}`);
   }
-  // Exact set: the replay needs these three and the goal wants nothing else.
+  // Exact set: the replay needs these and the goal wants nothing else.
   // Adding a guide-driven setting is a deliberate act; update this list with it.
   assert.deepStrictEqual([...configKeys].sort(), [...KEPT_CONFIG].sort());
+});
+
+// The retrospective's Information squiggle is gone, whole. It carried the
+// question as a diagnostic message, the invariants as related information, an
+// entry in the Problems panel and a phase-boundary clear — and on a create-file
+// step it painted the entire file blue. A shorter squiggle is still a squiggle,
+// so the oracle is "no diagnostic API in this extension at all", not "a smaller
+// one". The question lives on the gate and the tree now.
+test("no diagnostic surface survives anywhere under src/", () => {
+  const banned = /createDiagnosticCollection|DiagnosticSeverity|DiagnosticRelatedInformation|new vscode\.Diagnostic\b|workbench\.actions\.view\.problems/;
+  for (const file of walkFiles(path.join(ROOT, "src"))) {
+    const text = fs.readFileSync(file, "utf8");
+    assert.ok(
+      !banned.test(text),
+      `${path.relative(ROOT, file)} still speaks the diagnostic API — the retrospective squiggle was removed whole`,
+    );
+  }
+});
+
+test("the dwell binds both Tab and Escape, or Tab types into the code being read", () => {
+  const tab = keybindings.find((k) => k.key === "tab" && (k.when || "").includes("humanReplay.dwellActive"));
+  const esc = keybindings.find((k) => k.key === "escape" && (k.when || "").includes("humanReplay.dwellActive"));
+  assert.ok(tab, "no Tab binding for the dwell — it arms no engine, so Tab would fall through to indent");
+  assert.strictEqual(tab.command, "humanReplay.runNextStep");
+  assert.ok(esc, "no Escape binding for the dwell — Esc is how the human keeps the replay still");
+  assert.strictEqual(esc.command, "humanReplay.holdHere");
+  // If the walk's context key ever outlives its completion, both Escape
+  // bindings are live at once. Declaration order breaks the tie, and cancelling
+  // an already-landed step would drop the dwell and leave Tab unbound over the
+  // code the human is reading.
+  const escapes = keybindings.filter((k) => k.key === "escape");
+  assert.strictEqual(
+    escapes[escapes.length - 1].command,
+    "humanReplay.holdHere",
+    "the dwell's Escape must be declared last, or a stale disclosure context steals it",
+  );
+});
+
+test("the gate's Tab binding is declared after every other Tab binding", () => {
+  const tabs = keybindings.filter((k) => k.key === "tab");
+  const gate = tabs.findIndex((k) => (k.when || "").includes("humanReplay.gateActive"));
+  assert.ok(gate >= 0, "no Tab binding gated on humanReplay.gateActive");
+  assert.strictEqual(
+    gate,
+    tabs.length - 1,
+    "the gate's Tab binding must come last — VS Code breaks equal specificity by declaration order, and the gate holds the door",
+  );
+  assert.ok(
+    /editorTextFocus/.test(tabs[gate].when || ""),
+    "the gate's Tab binding must be scoped to editor focus — inside the picker Tab is the picker's",
+  );
 });
 
 // ---------------------------------------------------------------------------

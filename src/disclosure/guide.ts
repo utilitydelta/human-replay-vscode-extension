@@ -13,7 +13,7 @@
 // and the parser resolves the full rule+reason. A dangling reference is a guide
 // bug, not a soft failure — the parser throws, because the guide is canonical.
 
-import { Invariant, Retrospective } from "../retrospective/retrospective";
+import { Invariant, RetroChoice, Retrospective } from "../retrospective/retrospective";
 
 // "create-file" discloses a brand-new file via the file walk (fileWalk.ts):
 // one gesture per blank-line group of top-level items, the full descend-and-fill
@@ -46,6 +46,10 @@ export interface ReplayStep {
   before?: string;
   /** Real sandbox bytes the change lands. Absent for delete. */
   after?: string;
+  /** 1-based line of this step's `### Step N.M:` heading in the guide, so the
+   *  gate's "open the guide here" lands on the step and not the top of a
+   *  thousand-line file. */
+  line: number;
 }
 
 export interface ReplayGuide {
@@ -62,6 +66,8 @@ const HEADING = /^(#{1,6})\s+(.*)$/;
 const FENCE = /^```/;
 const STEP_HEADING = /^Step\s+([\d.]+):\s*(.*)$/i;
 const INVARIANT_BULLET = /^[-*]\s+\*\*([^*]+?):?\*\*\s*:?\s*(.*)$/; // - **Rule:** reason
+const QUOTE = /^\s*>\s?(.*?)\s*$/; // a blockquote line, body captured (CRLF safe)
+const CHOICE = /^\*\*(Answer|Distractor):\*\*\s*(.*)$/i; // inside the blockquote
 
 // Parse `**Label:**`-prefixed lines into a field bag. A value runs from after its
 // colon across continuation lines until the next field, heading, fence, or blank
@@ -125,6 +131,15 @@ function parseFields(lines: string[]): FieldBag {
       continue;
     }
 
+    // The choice blockquote is its own reader's territory. It ends a wrapped
+    // value the way a blank line does, so an answer written tight under the
+    // question never lands inside the question text.
+    if (QUOTE.test(line)) {
+      lastLabel = null;
+      codeTarget = null;
+      continue;
+    }
+
     // Continuation of the current text field (e.g. a wrapped Why).
     if (lastLabel) {
       fields.set(lastLabel, `${fields.get(lastLabel)} ${line.trim()}`.trim());
@@ -145,6 +160,83 @@ function parseInvariants(lines: string[]): Map<string, Invariant> {
     out.set(rule.toLowerCase(), { rule, reason: m[2].trim() });
   }
   return out;
+}
+
+
+// Read a step's answer key: the `> **Answer:** / > **Distractor:**` blockquote
+// under its question. The block is scoped to the step's own section and the run
+// stops at the first non-`>` line, so a Before fence below it (or the next
+// step's block) can never bleed in; the reader does not depend on a blank line
+// separating it from the question. An unlabelled `> ` line joins the previous
+// choice with a space — 29 answers in the corpus already wrap, and a wrapped
+// continuation must not read as a fourth choice.
+//
+// The count is a hard contract, not a preference (invariant 3, fail loud):
+// answer plus exactly two distractors gates the step; nothing at all leaves the
+// step ungated and every legacy guide loadable; anything between is a guide bug
+// the author fixes now rather than a lopsided picker the human meets later.
+function parseChoices(lines: string[], stepId: string): RetroChoice[] {
+  const run: string[] = [];
+  let inRun = false;
+  let fence = 0; // backtick count of the open fence, 0 when outside one
+  for (const line of lines) {
+    // A fenced block is verbatim bytes (a markdown step's After can itself hold
+    // a blockquote) — never answer-key territory. Fences nest by length: a
+    // ```` block closes on ```` and not on the ``` inside it.
+    const ticks = /^(`{3,})/.exec(line);
+    if (ticks) {
+      if (fence === 0) fence = ticks[1].length;
+      else if (ticks[1].length >= fence) fence = 0;
+      continue;
+    }
+    if (fence > 0) continue;
+    const q = QUOTE.exec(line);
+    if (q) {
+      run.push(q[1]);
+      inRun = true;
+      continue;
+    }
+    // The first run carrying a labelled choice is the answer key; a decorative
+    // blockquote before it is not.
+    if (inRun) {
+      if (run.some((l) => CHOICE.test(l.trim()))) break;
+      run.length = 0;
+      inRun = false;
+    }
+  }
+
+  const choices: RetroChoice[] = [];
+  for (const raw of run) {
+    const body = raw.trim();
+    const m = CHOICE.exec(body);
+    if (m) {
+      choices.push({ text: m[2].trim(), correct: m[1].toLowerCase() === "answer" });
+      continue;
+    }
+    if (body === "") continue;
+    // A wrapped continuation. With no choice open there is nothing to join —
+    // a prose blockquote above the key, which the reader ignores.
+    const last = choices[choices.length - 1];
+    if (last) last.text = `${last.text} ${body}`.trim();
+  }
+
+  if (choices.length === 0) return [];
+  const answers = choices.filter((c) => c.correct).length;
+  const distractors = choices.length - answers;
+  if (answers !== 1) {
+    throw new Error(
+      `replay guide: step ${stepId} has ${answers} \`> **Answer:**\` line(s) in its retrospective block — exactly one is required`,
+    );
+  }
+  if (distractors !== 0 && distractors !== 2) {
+    throw new Error(
+      `replay guide: step ${stepId} has ${distractors} \`> **Distractor:**\` line(s) — a step gates on exactly two, or carries none and stays ungated`,
+    );
+  }
+  if (distractors === 0) return [];
+  // Answer first, then the distractors in document order. The gate shuffles;
+  // the parser keeps the guide's order so a diff of the parse reads like the file.
+  return [...choices.filter((c) => c.correct), ...choices.filter((c) => !c.correct)];
 }
 
 function parseAction(raw: string | undefined): StepAction {
@@ -170,21 +262,23 @@ function parseAction(raw: string | undefined): StepAction {
 interface Section {
   level: number;
   title: string;
+  /** 1-based line of the heading in the guide — the step's "open here". */
+  line: number;
   body: string[];
 }
 
 function splitSections(md: string): Section[] {
   const sections: Section[] = [];
   let current: Section | null = null;
-  for (const line of md.split("\n")) {
+  md.split("\n").forEach((line, i) => {
     const h = HEADING.exec(line);
     if (h) {
-      current = { level: h[1].length, title: h[2].trim(), body: [] };
+      current = { level: h[1].length, title: h[2].trim(), line: i + 1, body: [] };
       sections.push(current);
     } else if (current) {
       current.body.push(line);
     }
-  }
+  });
   return sections;
 }
 
@@ -255,10 +349,13 @@ export function parseGuide(md: string): ReplayGuide {
       return inv;
     });
 
+    const why = bag.fields.get("why") ?? "";
     const retro: Retrospective = {
       symbol,
       question: bag.fields.get("retrospective") ?? "",
+      why,
       invariants,
+      choices: parseChoices(s.body, id),
     };
 
     steps.push({
@@ -268,10 +365,11 @@ export function parseGuide(md: string): ReplayGuide {
       file,
       action,
       symbol,
-      why: bag.fields.get("why") ?? "",
+      why,
       retro,
       before: bag.before,
       after: bag.after,
+      line: s.line,
     });
   }
 

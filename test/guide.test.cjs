@@ -221,3 +221,226 @@ for (const c of THROWS) {
     assert.throws(() => parseGuide(c.md), c.re);
   });
 }
+
+// --- Retrospective choice blocks (gated recall) ---
+//
+// A step's **Retrospective:** question may be followed by a blockquote carrying one
+// **Answer:** line and exactly two **Distractor:** lines. That triple is the only
+// shape the runtime can gate a step behind, so any other count is a malformed guide
+// and must fail loud naming the step (invariant 3), never silently half-gate.
+// Guides written before the block existed carry no blockquote at all and must keep
+// parsing ungated — every guide on disk stays loadable.
+
+const PHASED = (body) =>
+  `# Replay: t\n\n## System Invariants\n\n- **Inv A:** reason a.\n\n## Phase 1: p\n\n${body}\n`;
+
+const QUESTION = "Why can `align_down` never overflow where `align_up` can?";
+const ANSWER = "It only masks bits off, which never increases the value.";
+const D1 = "Bitwise ops are exempt from debug overflow checks.";
+const D2 = "It takes a `u32`, so the sum cannot reach `u64::MAX`.";
+
+// A lean Modify step: File, no fences — the shape the parser already accepts.
+const RETRO_STEP = ({
+  id = "1.1",
+  why = "masking down cannot carry.",
+  question = QUESTION,
+  tail = "",
+} = {}) =>
+  `### Step ${id}: align_down\n\n**File:** \`src/align.rs\`\n**Action:** Modify\n**Symbol:** \`align_down\`\n**Why:** ${why}\n\n**Retrospective:** ${question}\n${tail}`;
+
+const QUOTE = `> **Answer:** ${ANSWER}\n> **Distractor:** ${D1}\n> **Distractor:** ${D2}\n`;
+
+// The whole gating contract in one place: 3 choices, answer first, labels stripped.
+function assertGated(retro, label) {
+  assert.strictEqual(retro.choices.length, 3, `${label}: exactly 3 choices`);
+  assert.deepStrictEqual(
+    retro.choices.map((c) => c.text),
+    [ANSWER, D1, D2],
+    `${label}: answer first, then distractors in document order, labels stripped and trimmed`,
+  );
+  assert.deepStrictEqual(
+    retro.choices.map((c) => c.correct),
+    [true, false, false],
+    `${label}: only the Answer line is correct`,
+  );
+}
+
+test("gated step: an Answer plus two Distractors parse as 3 choices, answer first", () => {
+  const g = parseGuide(PHASED(RETRO_STEP({ tail: `\n${QUOTE}` })));
+  assertGated(g.steps[0].retro, "gated step");
+  assert.strictEqual(g.steps[0].retro.question, QUESTION, "the question is untouched by the block");
+});
+
+test("ungated step: a Retrospective with no blockquote parses with empty choices", () => {
+  const g = parseGuide(PHASED(RETRO_STEP()));
+  assert.deepStrictEqual(g.steps[0].retro.choices, []);
+  assert.strictEqual(g.steps[0].retro.question, QUESTION);
+});
+
+test("shipped guide gates every step, and its guide-level blockquote is nobody's choices", () => {
+  // replay-guides/asymmetric-fencing.md opens with a `>` blurb under `# Replay:`.
+  // It sits outside every step section, so no step may claim it: three choices
+  // per step, all of them from that step's own answer key. The demo is the
+  // artifact the extension ships, so it is also the proof that the shipped guide
+  // exercises the gate rather than describing it.
+  const g = parseGuide(SHIPPED);
+  const blurb = SHIPPED.split("\n").find((l) => l.startsWith("> The path"));
+  assert.ok(blurb, "the shipped guide no longer opens with its guide-level blockquote");
+  for (const s of g.steps) {
+    assert.strictEqual(s.retro.choices.length, 3, `step ${s.id} must gate`);
+    assert.strictEqual(s.retro.choices.filter((c) => c.correct).length, 1, `step ${s.id} needs exactly one answer`);
+    for (const c of s.retro.choices) {
+      assert.ok(!blurb.includes(c.text), `step ${s.id} claimed the guide-level blockquote as a choice`);
+    }
+  }
+});
+
+const RETRO_THROWS = [
+  {
+    name: "one distractor",
+    quote: `> **Answer:** ${ANSWER}\n> **Distractor:** ${D1}\n`,
+  },
+  {
+    name: "three distractors",
+    quote: `> **Answer:** ${ANSWER}\n> **Distractor:** ${D1}\n> **Distractor:** ${D2}\n> **Distractor:** And a third one.\n`,
+  },
+  {
+    name: "distractors with no answer",
+    quote: `> **Distractor:** ${D1}\n> **Distractor:** ${D2}\n`,
+  },
+];
+
+for (const c of RETRO_THROWS) {
+  test(`malformed retrospective block throws and names the offending step: ${c.name}`, () => {
+    // A clean step 1.1 precedes it, so the message naming 1.2 proves the parser
+    // points at the broken step rather than the file or the first step.
+    const md = PHASED(
+      `${RETRO_STEP({ id: "1.1", tail: `\n${QUOTE}` })}\n${RETRO_STEP({ id: "1.2", tail: `\n${c.quote}` })}`,
+    );
+    assert.throws(() => parseGuide(md), /1\.2/, `${c.name}: message must name step 1.2`);
+  });
+}
+
+test("a blockquote with no blank line before it parses identically and does not pollute the question", () => {
+  const spaced = parseGuide(PHASED(RETRO_STEP({ tail: `\n${QUOTE}` }))).steps[0].retro;
+  const tight = parseGuide(PHASED(RETRO_STEP({ tail: QUOTE }))).steps[0].retro;
+  assertGated(tight, "tight blockquote");
+  assert.strictEqual(tight.question, spaced.question, "blank line or not, same question");
+  assert.strictEqual(tight.question, QUESTION);
+  assert.ok(
+    !/Answer|Distractor|masks bits/.test(tight.question),
+    "a `>` line terminates the field; it is not a wrapped continuation of the question",
+  );
+});
+
+test("a `>` line carrying no label joins the previous choice instead of becoming a fourth", () => {
+  const wrapped =
+    `> **Answer:** It only masks bits off,\n> which never increases the value.\n` +
+    `> **Distractor:** Bitwise ops are exempt\n> from debug overflow checks.\n` +
+    `> **Distractor:** ${D2}\n`;
+  const g = parseGuide(PHASED(RETRO_STEP({ tail: `\n${wrapped}` })));
+  assertGated(g.steps[0].retro, "wrapped answer and wrapped distractor");
+});
+
+for (const q of ["none", "None — trivial rename", "NONE"]) {
+  for (const [shape, tail] of [["bare", ""], ["with an answer block", `\n${QUOTE}`]]) {
+    test(`a "none" retrospective parses without error: ${JSON.stringify(q)}, ${shape}`, () => {
+      // Refusing to gate a "none" question is a runtime call, not a parse error.
+      const g = parseGuide(PHASED(RETRO_STEP({ question: q, tail })));
+      assert.strictEqual(g.steps[0].retro.question, q);
+      if (tail) assertGated(g.steps[0].retro, `none question ${shape}`);
+      else assert.deepStrictEqual(g.steps[0].retro.choices, []);
+    });
+  }
+}
+
+test("a weak question with an answer and two distractors parses: the parser does not judge weakness", () => {
+  const weak = "Does this make sense?";
+  const g = parseGuide(PHASED(RETRO_STEP({ question: weak, tail: `\n${QUOTE}` })));
+  assert.strictEqual(g.steps[0].retro.question, weak);
+  assertGated(g.steps[0].retro, "weak question");
+});
+
+test("blockquote scoping: one step's choices never leak into the next step", () => {
+  const g = parseGuide(
+    PHASED(
+      `${RETRO_STEP({ id: "1.1", tail: `\n${QUOTE}` })}\n${RETRO_STEP({ id: "1.2", question: "Second question?" })}`,
+    ),
+  );
+  assert.strictEqual(g.steps.length, 2);
+  assertGated(g.steps[0].retro, "step 1.1");
+  assert.strictEqual(g.steps[1].retro.question, "Second question?");
+  assert.deepStrictEqual(g.steps[1].retro.choices, [], "step 1.2 declares no blockquote of its own");
+});
+
+test("blockquote scoping: the reader stops at the first non-`>` line and the fences still parse", () => {
+  const step =
+    `### Step 1.1: must_fence\n\n**File:** \`src/raft/lease.rs\`\n**Action:** Modify\n**Symbol:** \`must_fence\`\n**Why:** w.\n\n` +
+    `**Retrospective:** ${QUESTION}\n\n${QUOTE}\n` +
+    "**Before:**\n```rust\nfn f() { 1 }\n```\n\n**After:**\n```rust\nfn f() { 2 }\n```\n";
+  const g = parseGuide(PHASED(step));
+  assertGated(g.steps[0].retro, "blockquote followed by Before/After");
+  assert.strictEqual(g.steps[0].before, "fn f() { 1 }");
+  assert.strictEqual(g.steps[0].after, "fn f() { 2 }");
+});
+
+test("retro.why mirrors the step Why, wrapped lines joined the way the field is joined", () => {
+  const g = parseGuide(
+    PHASED(RETRO_STEP({ why: "first line\nsecond line\nthird line", tail: `\n${QUOTE}` })),
+  );
+  assert.strictEqual(g.steps[0].why, "first line second line third line");
+  assert.strictEqual(g.steps[0].retro.why, g.steps[0].why);
+
+  const shipped = parseGuide(SHIPPED);
+  for (const s of shipped.steps) {
+    assert.strictEqual(s.retro.why, s.why, `step ${s.id}: retro.why is the step Why`);
+  }
+  assert.match(shipped.steps[0].retro.why, /Symmetric fencing .* skewed clock/);
+});
+
+// Lines counted by hand in the column comments; step 1.1 sits on line 9, step 1.2 on 18.
+const LINE_FIXTURE = [
+  "# Replay: t", //             1
+  "", //                        2
+  "## System Invariants", //     3
+  "", //                        4
+  "- **Inv A:** reason a.", //   5
+  "", //                        6
+  "## Phase 1: p", //            7
+  "", //                        8
+  "### Step 1.1: first", //      9
+  "", //                       10
+  "**File:** `src/a.rs`", //   11
+  "**Action:** Modify", //     12
+  "**Symbol:** `f`", //        13
+  "**Why:** w.", //            14
+  "", //                       15
+  "**Retrospective:** none", //16
+  "", //                       17
+  "### Step 1.2: second", //   18
+  "", //                       19
+  "**File:** `src/b.rs`", //   20
+  "**Action:** Modify", //     21
+  "**Symbol:** `g`", //        22
+  "**Why:** w.", //            23
+].join("\n");
+
+test("step.line is the 1-based line number of the `### Step` heading", () => {
+  const g = parseGuide(LINE_FIXTURE);
+  assert.strictEqual(g.steps[0].line, 9);
+  assert.strictEqual(g.steps[1].line, 18);
+  // Guard the hand count itself, so a fixture edit fails here and not mysteriously above.
+  const lines = LINE_FIXTURE.split("\n");
+  assert.ok(lines[8].startsWith("### Step 1.1:"), "line 9 is the 1.1 heading");
+  assert.ok(lines[17].startsWith("### Step 1.2:"), "line 18 is the 1.2 heading");
+});
+
+test("step.line locates the heading in the shipped guide", () => {
+  const g = parseGuide(SHIPPED);
+  const lines = SHIPPED.split("\n");
+  for (const s of g.steps) {
+    const idx = lines.findIndex((l) => l.startsWith(`### Step ${s.id}:`));
+    assert.notStrictEqual(idx, -1, `no heading found for step ${s.id}`);
+    assert.strictEqual(s.line, idx + 1, `step ${s.id} heading line`);
+  }
+});

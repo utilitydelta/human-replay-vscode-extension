@@ -16,6 +16,11 @@ export class ReplayGhostProvider implements vscode.InlineCompletionItemProvider 
   constructor(
     private readonly disclosure: DisclosureController,
     private readonly diffReplay: DiffReplayController,
+    /** Called when a ghost is actually put in front of the caret. The gap
+     *  between an accept and this is the delay the human feels between Tabs —
+     *  the handler can return in a millisecond and the ghost still take a
+     *  second to arrive, so timing the handler alone measures the wrong thing. */
+    private readonly onServed?: (engine: "walk" | "diff-replay") => void,
   ) {}
 
   provideInlineCompletionItems(
@@ -24,11 +29,13 @@ export class ReplayGhostProvider implements vscode.InlineCompletionItemProvider 
   ): vscode.InlineCompletionItem[] | undefined {
     if (this.disclosure.isActive(document)) {
       const item = this.disclosure.currentItem(document, position);
+      if (item) this.onServed?.("walk");
       return item ? [item] : undefined;
     }
 
     if (this.diffReplay.isActive(document)) {
       const item = this.diffReplay.currentItem(document, position);
+      if (item) this.onServed?.("diff-replay");
       return item ? [item] : undefined;
     }
 

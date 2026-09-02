@@ -13,7 +13,16 @@ const ACTIVE_CONTEXT = "humanReplay.disclosureActive";
 // Gates the diverged Tab keybinding: outside the container Tab stays an indent,
 // so the human's own mid-walk code never fights the walk for the key.
 const RECOVERY_ELIGIBLE_CONTEXT = "humanReplay.recoveryEligible";
-const SETTLE_MS = 450; // wait for typing to settle before re-offering the recovery ghost
+const SETTLE_MS = 450;
+// VS Code re-queries the inline-completion providers on its own after the
+// accept's own document change. Firing our trigger on top of that costs a full
+// model update cycle — measured at 2075ms while the ghost itself was served in
+// 76ms — and an accept arriving mid-cycle waits for it. That wait is the 3.6s
+// the human sat through between a ghost being visible and Tab taking it.
+//
+// So give VS Code a beat to serve it, and trigger only if it did not.
+const TRIGGER_GRACE_MS = 60;
+ // wait for typing to settle before re-offering the recovery ghost
 
 // Drives the descend-and-fill walk over the native inline-completion surface.
 // When a session is active the completion provider yields the current step's
@@ -58,10 +67,10 @@ export class DisclosureController {
   private onCollision?: () => void;
   private onSessionEnd?: (outcome: { reason: "complete" | "cancelled"; accepted: number }) => void;
   // Set at the end of an accept so the next trigger can report the re-trigger gap.
-  private lastAcceptAt: number | undefined;
   // The text we last offered (baked ghost or recovery ghost) — lets noteChange tell
   // our own insert/accept from the human authoring their own code.
   private lastOffered: { offset: number; text: string } | undefined;
+  private pendingTrigger: ReturnType<typeof setTimeout> | undefined;
   // Once the human authors mid-walk, baked offsets are stale: the walk switches to
   // the cursor-anchored recovery ghost.
   private diverged = false;
@@ -189,6 +198,7 @@ export class DisclosureController {
     );
 
     this.lastOffered = { offset: expected, text: step.insert };
+    this.cancelPendingTrigger(); // it arrived; nothing left to ask for
     const item = new vscode.InlineCompletionItem(
       step.insert,
       new vscode.Range(position, position),
@@ -269,18 +279,25 @@ export class DisclosureController {
       retrospective,
       spec,
     );
-    this.lastAcceptAt = undefined;
     this.lastOffered = undefined;
     this.recoveryGhost = undefined;
     this.recoverySettled = false;
     this.lastQueryLog = undefined;
     this.clearSettle();
+    this.cancelPendingTrigger();
     this.setDiverged(false);
     this.setActive(true);
     this.output.appendLine(`[disclosure] start: ${steps.length} steps`);
     // Cursor is already on step 0's anchor, so no selection change fires — trigger
     // the first ghost directly. Every later ghost rides onSelectionChanged.
-    await vscode.commands.executeCommand("editor.action.inlineSuggest.trigger");
+    // Fire, never await. `inlineSuggest.trigger` resolves only once VS Code has
+    // polled EVERY registered inline-completion provider, so awaiting it hands
+    // our Tab latency to the slowest extension in the window. Measured on the
+    // moe-refix guide: our own ghost served in 82ms, this command resolving at
+    // ~1.5s, and the accept handler blocked behind it for 1703ms. The accept
+    // latches (`accepting`, `pending`) DROP Tabs pressed while a handler is in
+    // flight, so that wait was a dropped keystroke on every step.
+    void vscode.commands.executeCommand("editor.action.inlineSuggest.trigger");
     // When this start is chained from a previous ghost's accept (file-walk
     // segments), the trigger above can be swallowed mid-accept — nudge again
     // on the next tick. The position gate makes a stray harmless.
@@ -299,6 +316,7 @@ export class DisclosureController {
   // where the symbol is intentionally left partly built for the human to finish.
   private end(): void {
     this.clearSettle();
+    this.cancelPendingTrigger();
     this.clearClimbPreview();
     this.session = undefined;
     this.lastOffered = undefined;
@@ -313,6 +331,7 @@ export class DisclosureController {
   private finish(session: DisclosureSession): void {
     this.output.appendLine(`[disclosure] complete (${session.steps.length} steps)`);
     this.clearSettle();
+    this.cancelPendingTrigger();
     this.clearClimbPreview();
     this.session = undefined;
     this.lastOffered = undefined;
@@ -372,7 +391,6 @@ export class DisclosureController {
       this.finish(session);
       return;
     }
-    this.lastAcceptAt = Date.now();
   }
 
   // A buffer change while a walk is active. Before divergence: a change that isn't
@@ -641,10 +659,41 @@ export class DisclosureController {
     if (expected === undefined) return;
     if (document.offsetAt(position) !== expected) return;
 
-    await vscode.commands.executeCommand("editor.action.inlineSuggest.trigger");
-    if (this.lastAcceptAt !== undefined) {
-      this.output.appendLine(`[disclosure] retrigger ${Date.now() - this.lastAcceptAt}ms`);
-      this.lastAcceptAt = undefined;
-    }
+    const step = s.current();
+    if (!step) return;
+    // Already on screen — nothing to ask for.
+    if (this.served(expected, step.insert)) return;
+    this.scheduleTrigger(expected, step.insert);
+  }
+
+  private served(offset: number, text: string): boolean {
+    return this.lastOffered !== undefined && this.lastOffered.offset === offset && this.lastOffered.text === text;
+  }
+
+  private cancelPendingTrigger(): void {
+    if (this.pendingTrigger) clearTimeout(this.pendingTrigger);
+    this.pendingTrigger = undefined;
+  }
+
+  // Wait out the grace window, then trigger only if VS Code still has not
+  // served the ghost. The timing is reported from the command being ISSUED, not
+  // from the last accept: measuring from the accept counted the human's think
+  // time, since the next selection change after an accept is usually their next
+  // Tab. That is how "retrigger 1610ms" came to read as latency when the ghost
+  // had been on screen for a second and a half already.
+  private scheduleTrigger(expected: number, insert: string): void {
+    this.cancelPendingTrigger();
+    this.pendingTrigger = setTimeout(() => {
+      this.pendingTrigger = undefined;
+      if (this.served(expected, insert)) {
+        this.logQuery("ghost arrived on VS Code's own re-query — no trigger sent", "no trigger");
+        return;
+      }
+      const issued = Date.now();
+      void Promise.resolve(vscode.commands.executeCommand("editor.action.inlineSuggest.trigger")).then(() => {
+        const ms = Date.now() - issued;
+        if (ms >= 80) this.output.appendLine(`[perf] disclosure: inlineSuggest.trigger resolved in ${ms}ms`);
+      });
+    }, TRIGGER_GRACE_MS);
   }
 }

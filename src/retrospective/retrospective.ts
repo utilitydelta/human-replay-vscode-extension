@@ -15,13 +15,42 @@ export interface Invariant {
   reason: string;
 }
 
+/** One line the human can pick at the gate. Every choice is a real line from
+ *  the guide — the extension shuffles them and nothing else (model-free). */
+export interface RetroChoice {
+  /** The choice as the picker shows it: label stripped, wrapped lines joined. */
+  text: string;
+  /** True for the guide's `> **Answer:**` line. */
+  correct: boolean;
+}
+
 export interface Retrospective {
   /** The symbol this gates, for display. */
   symbol: string;
   /** The question the human answers before moving on. */
   question: string;
+  /** Why this code exists — shown under a wrong pick, and always in the tree.
+   *  The one thing the guide writes for the human rather than the engine. */
+  why: string;
   /** System Invariants this step touches, surfaced verbatim. */
   invariants: Invariant[];
+  /** Answer plus its two distractors when the guide wrote them, else empty.
+   *  Populated does not mean gated: a weak or `none` question never gates. */
+  choices: RetroChoice[];
+}
+
+/** A question the guide wired as "no thinking point here". Never gates; counted
+ *  separately from a step whose author simply wrote no distractors. */
+export function isNoneQuestion(q: string): boolean {
+  return /^\s*none\b/i.test(q);
+}
+
+/** Does this retrospective stand between the step and the next one? Three
+ *  choices, a question worth asking, and not wired off. The runtime decision —
+ *  the parser stores the choices either way. */
+export function gates(retro: Retrospective): boolean {
+  const q = retro.question.trim();
+  return q !== "" && retro.choices.length === 3 && !isNoneQuestion(q) && !isWeak(q);
 }
 
 const GENERIC = [

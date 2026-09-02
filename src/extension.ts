@@ -9,13 +9,39 @@ import { ReplayOrchestrator } from "./disclosure/orchestrator";
 import { GuideRunner } from "./disclosure/guideRunner";
 import { GuideTreeProvider } from "./disclosure/guideTree";
 import { surfaceRetrospective } from "./retrospective/surface";
+import { GateQuickPick } from "./retrospective/gateSurface";
+import { PendingGate } from "./retrospective/gate";
+
+// Every line carries a wall clock. Without it the channel says what happened
+// and in what order, but never WHERE THE TIME WENT — and "it feels slow between
+// Tabs" is a question about gaps between lines, not about the lines. Reading a
+// gap beats inferring one from a stopwatch that might be measuring think time.
+function timestamped(channel: vscode.OutputChannel): vscode.OutputChannel {
+  const stamp = (): string => {
+    const d = new Date();
+    return `${d.toTimeString().slice(0, 8)}.${String(d.getMilliseconds()).padStart(3, "0")}`;
+  };
+  return {
+    get name() {
+      return channel.name;
+    },
+    append: (v: string) => channel.append(v),
+    appendLine: (v: string) => channel.appendLine(`${stamp()} ${v}`),
+    replace: (v: string) => channel.replace(v),
+    clear: () => channel.clear(),
+    show: (a?: unknown, b?: unknown) => (channel.show as (a?: unknown, b?: unknown) => void)(a, b),
+    hide: () => channel.hide(),
+    dispose: () => channel.dispose(),
+  } as vscode.OutputChannel;
+}
 
 export function activate(context: vscode.ExtensionContext) {
-  const output = vscode.window.createOutputChannel("Human Replay");
-  context.subscriptions.push(output);
-
-  const retrospectives = vscode.languages.createDiagnosticCollection("replay-retrospective");
-  context.subscriptions.push(retrospectives);
+  const channel = vscode.window.createOutputChannel("Human Replay");
+  context.subscriptions.push(channel);
+  const output = timestamped(channel);
+  // Anything slower than this between a Tab and its result is felt, not
+  // measured. Below it, silence: the log is evidence, not telemetry.
+  const SLOW_TAB_MS = 80;
 
   const disclosure = new DisclosureController(output);
   const diffReplay = new DiffReplayController(output);
@@ -24,73 +50,87 @@ export function activate(context: vscode.ExtensionContext) {
   const guideRunner = new GuideRunner(output, disclosure, orchestrator);
   // The ghost surface both engines render through. It proposes only what a
   // running replay already holds — no replay, no ghost.
+  // Tab-to-Tab latency, measured where the human feels it: from the accept
+  // landing to the next ghost appearing. A handler that returns instantly and a
+  // ghost that arrives a second later are the same experience, and only this
+  // number tells them apart.
+  let lastAcceptAt: number | undefined;
   context.subscriptions.push(
     vscode.languages.registerInlineCompletionItemProvider(
       { pattern: "**" },
-      new ReplayGhostProvider(disclosure, diffReplay),
+      new ReplayGhostProvider(disclosure, diffReplay, (engine) => {
+        if (lastAcceptAt === undefined) return;
+        const ms = Date.now() - lastAcceptAt;
+        lastAcceptAt = undefined;
+        // Above the handler threshold plus the trigger's grace window: a ghost
+        // that lands at ~140ms is the normal path now, and a perf line that
+        // fires every time is noise. Noise is how a think-time number got read
+        // as latency twice in this hunt.
+        if (ms >= SLOW_TAB_MS + 170) output.appendLine(`[perf] ${engine}: next ghost arrived ${ms}ms after the accept`);
+      }),
     ),
   );
 
-  // When a walk completes, surface its retrospective over the disclosed symbol —
-  // the step end is the thinking point the human sits with before moving on.
+  // Every engine reports the same way: the walk finished, tell the counter. What
+  // happens next — the gate, the toast, or straight into the next step — is one
+  // decision in the runner (completeCurrent), not three copies out here. A
+  // delete has no walk after its strike-and-clear, so the clear reports too.
+  // What the last step put on screen, so the dwell can point at it. The engines
+  // already carry the range; nothing else consumes it now that the squiggle is
+  // gone. A delete leaves nothing to point at.
+  let lastLanded: { uri: vscode.Uri; offset: number; length: number } | undefined;
   disclosure.setCompletionHandler((session) => {
-    guideRunner.completeCurrent(); // advance the program counter when the walk finishes
-    if (!session.retrospective) return;
-    const doc = vscode.workspace.textDocuments.find(
-      (d) => d.uri.toString() === session.uri.toString(),
-    );
-    if (!doc) return;
-    const range = new vscode.Range(
-      doc.positionAt(session.anchorOffset),
-      doc.positionAt(session.anchorOffset + session.sourceLength),
-    );
-    surfaceRetrospective(doc, range, session.retrospective, retrospectives, output);
-  });
-
-  // Same thinking-point hook for a completed diff-replay walk: the modification
-  // beat ends on the invariant-tagged retrospective the human must sit with.
-  // A delete's whole gesture is the strike-and-clear — no walk follows, so the
-  // clear itself advances the counter. The retrospective has no symbol left to
-  // anchor on; surface its question as a message instead of a gate.
-  orchestrator.setDeleteCompletionHandler((retro) => {
+    lastLanded = { uri: session.uri, offset: session.anchorOffset, length: session.sourceLength };
     guideRunner.completeCurrent();
-    if (retro) void vscode.window.showInformationMessage(`Human Replay — retrospective for ${retro.symbol}: ${retro.question}`);
   });
-
   diffReplay.setCompletionHandler((done) => {
-    guideRunner.completeCurrent(); // advance the program counter when the walk finishes
-    if (!done.retrospective) return;
-    const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === done.uri.toString());
-    if (!doc) return;
-    const range = new vscode.Range(
-      doc.positionAt(done.retroOffset),
-      doc.positionAt(done.retroOffset + done.retroLen),
-    );
-    surfaceRetrospective(doc, range, done.retrospective, retrospectives, output);
+    lastLanded = { uri: done.uri, offset: done.retroOffset, length: done.retroLen };
+    guideRunner.completeCurrent();
+  });
+  orchestrator.setDeleteCompletionHandler(() => {
+    lastLanded = undefined;
+    guideRunner.completeCurrent();
   });
 
   // Post-accept hooks and the Tab/keybinding targets the walks route through.
   // Not palette commands — they are the accept half of each surface: the native
   // ghost's command, the dramatic decoration's Tab, and the rewrite strike's Tab.
+  // A Tab that takes longer than a frame or two is the difference between the
+  // replay feeling like typing and feeling like a form submission. Every Tab
+  // path reports its own cost, so "there is a delay" becomes a line in the
+  // output channel naming the handler instead of a hunt.
+  const timed = <T>(name: string, fn: () => T): T => {
+    const started = Date.now();
+    const done = (): void => {
+      const ms = Date.now() - started;
+      lastAcceptAt = Date.now(); // the ghost race starts when the handler is done
+      if (ms >= SLOW_TAB_MS) output.appendLine(`[perf] ${name} took ${ms}ms`);
+    };
+    const out = fn();
+    if (out instanceof Promise) return out.finally(done) as T;
+    done();
+    return out;
+  };
+
   context.subscriptions.push(
     vscode.commands.registerCommand("humanReplay.disclosureAccepted", () => {
       const editor = vscode.window.activeTextEditor;
-      if (editor) disclosure.onAccepted(editor);
+      if (editor) timed("disclosureAccepted", () => disclosure.onAccepted(editor));
     }),
     vscode.commands.registerCommand("humanReplay.diffReplayAccepted", () => {
       const editor = vscode.window.activeTextEditor;
-      if (editor) diffReplay.onAccepted(editor);
+      if (editor) timed("diffReplayAccepted", () => diffReplay.onAccepted(editor));
     }),
     vscode.commands.registerCommand("humanReplay.diffReplayAcceptDecoration", async () => {
       const editor = vscode.window.activeTextEditor;
       // A stale context must not make Tab a dead key: unhandled falls through
       // to the editor's real indent.
-      if (!editor || !(await diffReplay.acceptDecoration(editor))) {
+      if (!editor || !(await timed("diffReplayAcceptDecoration", () => diffReplay.acceptDecoration(editor)))) {
         await vscode.commands.executeCommand("tab");
       }
     }),
     vscode.commands.registerCommand("humanReplay.acceptRewriteClear", async () => {
-      if (!(await orchestrator.acceptRewriteClear())) {
+      if (!(await timed("acceptRewriteClear", () => orchestrator.acceptRewriteClear()))) {
         await vscode.commands.executeCommand("tab");
       }
     }),
@@ -157,11 +197,6 @@ export function activate(context: vscode.ExtensionContext) {
   // steps — each routes itself by its action (create→disclose, modify→auto-routed
   // diff-replay, delete→strike). Model-free: the route is read from the guide, the
   // bytes are the guide's real sandbox bytes. The program counter is the position.
-  const clearGate = (doc: vscode.TextDocument) => retrospectives.delete(doc.uri);
-  // A phase boundary wipes the whole collection: the previous phase's squiggles
-  // and invariants, across every file it touched, retire when the human moves on.
-  guideRunner.setDiagnosticClearer(() => retrospectives.clear());
-
   // Program-counter indicator: the replay's position, always visible while a guide
   // is loaded. Click to run the next step.
   const guideStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
@@ -175,6 +210,36 @@ export function activate(context: vscode.ExtensionContext) {
     const total = guideRunner.steps.length;
     const done = guideRunner.isComplete;
     const at = Math.min(guideRunner.counter + 1, total);
+    // The gate outranks every other state: nothing flows until it is answered,
+    // so the status bar says exactly that, in the same warning colour a phase
+    // pause uses. Esc hides the picker, not the gate — this is what tells the
+    // human the door is still shut.
+    const gated = guideRunner.gateStep;
+    if (gated) {
+      guideStatus.text = "$(question) answer the retrospective to continue";
+      guideStatus.tooltip = `Step ${gated.id} is done. Answer its retrospective to continue — click here (or press Tab) to bring the question back.`;
+      guideStatus.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
+      guideStatus.show();
+      return;
+    }
+    // The hold on what just landed. It is the only status-bar state that
+    // counts down, because "how long have I got" is the whole question the
+    // human asks while reading.
+    const dwell = guideRunner.dwellInfo;
+    if (dwell && !done) {
+      const left = Math.ceil(dwell.remainingMs / 1000);
+      guideStatus.text =
+        dwell.mode === "parked"
+          ? `$(debug-pause) holding here — Tab for step ${dwell.stepId}`
+          : `$(clock) reading — ${left}s to step ${dwell.stepId}`;
+      guideStatus.tooltip =
+        dwell.mode === "parked"
+          ? `The replay is parked on the code you just landed. Tab (or click here) runs step ${dwell.stepId}.`
+          : `Holding on the code you just landed. Tab moves on now, Esc stays here for as long as you want.`;
+      guideStatus.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
+      guideStatus.show();
+      return;
+    }
     // A phase pause must be impossible to miss AFTER the toast is gone: the
     // status bar goes prominent and stays that way until the human continues.
     const paused = guideRunner.pausedPhase;
@@ -206,10 +271,125 @@ export function activate(context: vscode.ExtensionContext) {
     guideStatus.show();
   };
 
+  // The dwell has to be visible where the eyes are. A status-bar countdown is
+  // not an answer to "why has nothing happened" when the human is reading code
+  // three panes away from it. The bytes that just landed get a highlight and
+  // the countdown rides on the end of them.
+  const dwellDecoration = vscode.window.createTextEditorDecorationType({
+    backgroundColor: new vscode.ThemeColor("editor.selectionHighlightBackground"),
+    borderColor: new vscode.ThemeColor("editorInfo.foreground"),
+    borderWidth: "0 0 0 2px",
+    borderStyle: "solid",
+    overviewRulerColor: new vscode.ThemeColor("editorInfo.foreground"),
+    overviewRulerLane: vscode.OverviewRulerLane.Left,
+    rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
+  });
+  context.subscriptions.push(dwellDecoration);
+  let dwellPainted = false;
+  const renderDwell = () => {
+    const info = guideRunner.dwellInfo;
+    const target = lastLanded;
+    // The common case by far: no dwell, nothing painted. Clearing decorations
+    // off every visible editor is a renderer round trip per editor, and
+    // `changed()` fires on every step transition — do not pay it for nothing.
+    if (!info && !dwellPainted) return;
+    dwellPainted = info !== undefined && target !== undefined;
+    for (const editor of vscode.window.visibleTextEditors) {
+      const mine = info && target && editor.document.uri.toString() === target.uri.toString();
+      if (!mine) {
+        editor.setDecorations(dwellDecoration, []);
+        continue;
+      }
+      const range = new vscode.Range(
+        editor.document.positionAt(target.offset),
+        editor.document.positionAt(target.offset + target.length),
+      );
+      const label =
+        info.mode === "parked"
+          ? "  held here — Tab for the next step"
+          : `  ${Math.ceil(info.remainingMs / 1000)}s — Tab to move on, Esc to stay`;
+      editor.setDecorations(dwellDecoration, [
+        {
+          range,
+          renderOptions: {
+            after: {
+              contentText: label,
+              color: new vscode.ThemeColor("editorCodeLens.foreground"),
+              fontStyle: "italic",
+            },
+          },
+        },
+      ]);
+    }
+  };
+
+  // The countdown is a status-bar repaint, nothing more: it must not run through
+  // the runner's change handler, which persists the position on every fire.
+  let dwellTicker: ReturnType<typeof setInterval> | undefined;
+  const tickDwell = () => {
+    const holding = guideRunner.dwellInfo?.mode === "holding";
+    if (holding && !dwellTicker) {
+      dwellTicker = setInterval(() => {
+        if (guideRunner.dwellInfo?.mode !== "holding") {
+          tickDwell();
+          return;
+        }
+        updateGuideStatus();
+        renderDwell();
+      }, 1000);
+    } else if (!holding && dwellTicker) {
+      clearInterval(dwellTicker);
+      dwellTicker = undefined;
+    }
+  };
+  context.subscriptions.push({
+    dispose: () => {
+      if (dwellTicker) clearInterval(dwellTicker);
+    },
+  });
+
+  // Esc while the replay holds: stay on this code. Not a step cancel — the step
+  // is landed and done; this only stops the replay moving on.
+  context.subscriptions.push(
+    vscode.commands.registerCommand("humanReplay.holdHere", () => {
+      if (guideRunner.parkDwell()) return;
+      vscode.window.setStatusBarMessage(
+        guideRunner.dwellInfo
+          ? "Human Replay: already holding here — Tab when you are ready"
+          : "Human Replay: nothing to hold — the replay is not between steps",
+        2000,
+      );
+    }),
+  );
+
   // The replay-guide panel (TreeView): phases → steps → status. Refreshes whenever
   // the runner's state changes; clicking a step runs it, the inline icons run/skip.
   const guideTree = new GuideTreeProvider(guideRunner);
-  context.subscriptions.push(vscode.window.registerTreeDataProvider("humanReplay.guideSteps", guideTree));
+  // createTreeView, not registerTreeDataProvider: the toast's "Show step" and
+  // the gate both reveal a step node the human never expanded, and reveal only
+  // exists on the view.
+  const guideView = vscode.window.createTreeView("humanReplay.guideSteps", { treeDataProvider: guideTree });
+  context.subscriptions.push(guideView);
+  const revealStep = (index: number) => {
+    void guideView.reveal({ kind: "step", index }, { select: true, focus: false, expand: true });
+  };
+  guideRunner.setRetrospectiveSurface((retro, index) => surfaceRetrospective(retro, index, output, revealStep));
+
+  // The gate's picker. The runner owns the state machine and the door; this
+  // draws it and reports picks back.
+  const gatePicker = new GateQuickPick(output, {
+    pick: (i) => guideRunner.pickGate(i),
+    dismiss: () => guideRunner.dismissGate(),
+    flow: () => guideRunner.flowAfterGate(),
+    openCode: (step) => void guideRunner.revealStepCode(guideRunner.steps.findIndex((s) => s.id === step.id)),
+    openGuide: (step) => {
+      if (!currentGuideUri) return;
+      const at = new vscode.Position(Math.max(0, step.line - 1), 0);
+      void vscode.window.showTextDocument(currentGuideUri, { preview: false, selection: new vscode.Range(at, at) });
+    },
+  });
+  context.subscriptions.push({ dispose: () => gatePicker.dispose() });
+  guideRunner.setGateHost(gatePicker);
   guideRunner.setChangeHandler(() => {
     guideTree.refresh();
     updateGuideStatus();
@@ -222,6 +402,20 @@ export function activate(context: vscode.ExtensionContext) {
     // bar click runs); arming only discloses hunk 1, so the "see the strike
     // before it lands" gate the pause exists for stays intact.
     void vscode.commands.executeCommand("setContext", "humanReplay.patchPauseActive", guideRunner.pausedPatchInfo !== undefined);
+    // The gate's door, as a context key: Tab in the editor re-shows the picker
+    // instead of indenting, which is the whole point of a gate the human can Esc
+    // out of. Inside the picker itself Tab never reaches the editor at all.
+    void vscode.commands.executeCommand("setContext", "humanReplay.gateActive", guideRunner.gateStep !== undefined);
+    // Same reason as the patch pause: while the replay holds, no engine surface
+    // is armed, so without this key Tab would fall through to the editor's
+    // indent and type bytes into the code the human is reading.
+    void vscode.commands.executeCommand("setContext", "humanReplay.dwellActive", guideRunner.dwellInfo !== undefined);
+    tickDwell();
+    renderDwell();
+    // Any pause between an accept and the next ghost is human time, not
+    // latency. Drop the stopwatch rather than report a gate's think time as a
+    // slow ghost.
+    if (guideRunner.gateStep || guideRunner.dwellInfo) lastAcceptAt = undefined;
   });
   // A re-anchored continue that can't place the next node marks the in-flight step
   // blocked — the panel shows amber and the human decides. Both engines surface the
@@ -241,6 +435,12 @@ export function activate(context: vscode.ExtensionContext) {
   // no ghost is up, Tab nudges the ghost instead of typing.
   context.subscriptions.push(
     vscode.commands.registerCommand("humanReplay.nudgeGhost", () => {
+      // This fires on Tab whenever `inlineSuggestionVisible` is FALSE while a
+      // walk is active — which includes the window where VS Code is still
+      // computing the suggestion. A Tab landing there does not accept anything,
+      // and until now it left no trace, so a run of dead Tabs read as a clean
+      // log and a slow tool. Say it happened.
+      output.appendLine("[perf] tab arrived with no inline suggestion visible — nudged instead of accepting");
       void vscode.commands.executeCommand("editor.action.inlineSuggest.trigger");
     }),
   );
@@ -251,7 +451,7 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand("humanReplay.diffReplayNudge", async () => {
       const editor = vscode.window.activeTextEditor;
-      if (!editor || !(await diffReplay.nudge(editor))) {
+      if (!editor || !(await timed("diffReplayNudge", () => diffReplay.nudge(editor)))) {
         await vscode.commands.executeCommand("tab");
       }
     }),
@@ -259,7 +459,7 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand("humanReplay.guide.runStepAt", async (node?: { index: number }) => {
       if (!node) return;
-      await guideRunner.runStep(node.index, clearGate);
+      await guideRunner.runStep(node.index);
     }),
     vscode.commands.registerCommand("humanReplay.guide.skipStepAt", (node?: { index: number }) => {
       if (node) guideRunner.skip(node.index);
@@ -299,7 +499,7 @@ export function activate(context: vscode.ExtensionContext) {
     // Read the saved position BEFORE load(): load fires changed() → persistPosition,
     // and with the key still current a RE-load would clobber its own save with the
     // freshly-reset counter. Parking the key while loading closes the race.
-    const saved = context.workspaceState.get<{ done?: number[]; skipped?: number[] }>(positionKey(uri));
+    const saved = context.workspaceState.get<{ done?: number[]; skipped?: number[]; gate?: PendingGate }>(positionKey(uri));
     currentGuideUri = undefined;
     const guide = guideRunner.load(md);
     currentGuideUri = uri;
@@ -307,7 +507,10 @@ export function activate(context: vscode.ExtensionContext) {
     // derive. Done-ness re-derives from ground truth below (resume.ts's thesis):
     // a step reverted out-of-band must fall back to pending, not stay green off a
     // stale counter.
-    if (saved?.skipped?.length) guideRunner.restore({ skipped: saved.skipped });
+    // A gate the human never answered re-arms across a reload, even though the
+    // bytes below will read its step as done — the door was shut when the window
+    // went away, so it is shut when the window comes back.
+    if (saved?.skipped?.length || saved?.gate) guideRunner.restore({ skipped: saved.skipped, gate: saved.gate });
     const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     const derived = root ? guideRunner.deriveLanded(root) : 0;
     updateGuideStatus();
@@ -430,7 +633,7 @@ export function activate(context: vscode.ExtensionContext) {
           guide: guidePick.fsPath,
         });
       }
-      await guideRunner.runCurrent(clearGate);
+      await guideRunner.runCurrent();
       updateGuideStatus();
     }),
   );
@@ -443,7 +646,7 @@ export function activate(context: vscode.ExtensionContext) {
         await vscode.commands.executeCommand("humanReplay.startReplay");
         return;
       }
-      await guideRunner.runCurrent(clearGate);
+      await guideRunner.runCurrent();
       updateGuideStatus();
     }),
   );

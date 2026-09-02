@@ -1,5 +1,53 @@
 # Changelog
 
+## 2.0.0
+
+Nothing slowed Tab down. A phase ran at keyboard-repeat speed and the
+retrospective, the one place the guide asks you to think, arrived as an
+Information squiggle you could ignore. On a create-file step it painted the
+whole file blue.
+
+Breaking, both repos: a step's retrospective now carries an answer key. The
+generator writes `> **Answer:**` plus exactly two `> **Distractor:**` lines,
+and one distractor or three is a parse error naming the step. Guides written
+before this still load and still replay; their steps just do not gate.
+
+- The retrospective is a gate. Three one-line choices stand between a finished
+  step and the next one, shuffled per step, with the code and the guide one
+  button away. A wrong pick is marked, shows the step's Why underneath, and
+  locks the picker for `humanReplay.gateLockoutSeconds` (default 5). The gate
+  is a forced pause with feedback, not a proof of understanding: elimination
+  gets through, and that is fine.
+- The squiggle is gone whole. No diagnostic, no Problems entry, no phase-
+  boundary clear. The question, the Why and the invariants live in the Replay
+  Guide tree now, under a step that expands. Until this release the Why, the
+  one thing the guide writes for you rather than the engine, had no surface at
+  all outside a tooltip.
+- A weak question never gates. The smell was always a confidence probe on the
+  agent that wrote the guide, and one that could not say why the code exists
+  does not get to write its answer key. The validator fails the guide and
+  reports `gated / wired / ungated / weak / over-length` so the author sees the
+  gap before you do.
+- The replay holds on what it just landed. `humanReplay.dwellSeconds` (default
+  3) keeps the editor still long enough to read the bytes before the jump, with
+  the landed range highlighted and a countdown on the end of it. Tab moves on
+  now, Esc stays as long as you like. It never holds when the next step is
+  already on screen, and never after a gate, which already stopped you with the
+  code in view.
+- Ground truth outranks the gate. Undo a step's bytes while its question stands
+  and the gate drops, the step goes back to pending, and running it replays.
+  Naming a different step in the tree outranks it too: that is navigation, and
+  the human decides where to go.
+- Tab is faster. Four paths awaited `inlineSuggest.trigger`, a command that
+  resolves only once VS Code has polled every inline-completion provider in the
+  window; the accept latches drop Tabs while a handler is in flight, so that
+  wait was a swallowed keystroke on every step. Measured at 1703ms on a handler
+  whose own ghost was ready in 82ms. Nothing after those awaits read a result.
+- Every line in the output channel carries a wall clock, and the Tab paths
+  report their own cost when it is slow enough to feel. Two stopwatches in this
+  hunt measured think time and called it latency; a timestamp cannot.
+
+
 ## 1.2.0
 
 Two live incidents drove this release. A foreign ghost Tab-accepted at an armed

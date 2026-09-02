@@ -173,3 +173,47 @@ test("cancelInFlight: nothing lands, and a stray complete() can't mark the step 
   assert.strictEqual(pc.status(1), "pending");
   assert.strictEqual(pc.cancelInFlight(), false, "cancel with nothing in flight reports so");
 });
+
+// The counter is memory. The files are the truth, and they change underneath it:
+// the human undoes a step's bytes mid-session and asks to run it again. Before
+// markPending the only way back was End Replay + Start Replay, which re-derives
+// every step from disk.
+test("markPending un-does a step the files say is no longer landed", () => {
+  const pc = fresh(3);
+  pc.begin(0);
+  pc.complete();
+  assert.strictEqual(pc.status(0), "done");
+  assert.strictEqual(pc.next(), 1, "a done step is not next");
+  pc.markPending(0);
+  assert.strictEqual(pc.status(0), "current", "the rolled-back step is where the replay stands");
+  assert.strictEqual(pc.next(), 0, "the rolled-back step is the next to run");
+});
+
+test("markPending clears a block and drops the step out of the persisted position", () => {
+  const pc = fresh(3);
+  pc.begin(1);
+  pc.block();
+  assert.strictEqual(pc.status(1), "blocked");
+  pc.markPending(1);
+  assert.strictEqual(pc.status(1), "pending");
+
+  pc.begin(2);
+  pc.complete();
+  pc.markPending(2);
+  assert.deepStrictEqual(pc.snapshot().done, [], "a rolled-back step must not persist as done");
+});
+
+test("markPending on a step mid-flight tears the flight down with it", () => {
+  const pc = fresh(2);
+  pc.begin(0);
+  pc.markPending(0);
+  assert.strictEqual(pc.inFlightIndex, undefined);
+  assert.strictEqual(pc.complete(), false, "a completion after the roll-back must not mark it done");
+});
+
+test("markPending leaves a skip alone — a skip is human intent, not a byte verdict", () => {
+  const pc = fresh(3);
+  pc.skip(1);
+  pc.markPending(1);
+  assert.strictEqual(pc.status(1), "skipped");
+});

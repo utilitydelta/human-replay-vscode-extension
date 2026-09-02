@@ -9,7 +9,38 @@
         "--extensionDevelopmentPath=${workspaceFolder}",
         "${env:HOME}/sandbox/replay-tab-scratch"
       ],
-      "outFiles": ["${workspaceFolder}/dist/**/*.js"],
+      "outFiles": [
+        "${workspaceFolder}/dist/**/*.js"
+      ],
+      "preLaunchTask": "build"
+    },
+    {
+      "name": "Run Extension (no other extensions)",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}",
+        "--disable-extensions",
+        "${env:HOME}/sandbox/replay-tab-scratch"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/dist/**/*.js"
+      ],
+      "preLaunchTask": "build"
+    },
+    {
+      "name": "Run Extension (no rust-analyzer)",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}",
+        "--disable-extension",
+        "rust-lang.rust-analyzer",
+        "${env:HOME}/sandbox/replay-tab-scratch"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/dist/**/*.js"
+      ],
       "preLaunchTask": "build"
     }
   ]

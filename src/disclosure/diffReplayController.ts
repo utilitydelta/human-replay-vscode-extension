@@ -10,6 +10,9 @@ import { revealCursor } from "./reveal";
 import { Retrospective } from "../retrospective/retrospective";
 
 const SETTLE_MS = 450; // wait for the human's typing to settle before re-anchoring
+// Grace before asking VS Code for a ghost it may already be fetching. See the
+// same constant in controller.ts for the measurement behind it.
+const TRIGGER_GRACE_MS = 60;
 
 // Drives diff-replay — the edit-aware walk — over the native inline-completion
 // surface. Where the insert walk (controller.ts) only opens new lines, this
@@ -87,7 +90,6 @@ export class DiffReplayController {
   private session: Session | undefined;
   private onComplete?: (s: { uri: vscode.Uri; retroOffset: number; retroLen: number; retrospective?: Retrospective }) => void;
   private onCollision?: () => void;
-  private lastAcceptAt: number | undefined;
   // The human authored mid-replay (re-anchoring engaged). `typing` is true between a
   // keystroke and the settle that follows it — currentItem returns nothing while it
   // is, so VS Code's per-keystroke auto re-query doesn't flash the ghost.
@@ -102,6 +104,7 @@ export class DiffReplayController {
   private foreignPaused = false;
   private lastInsertCollisionLog: string | undefined; // dedupe — resolve runs per query
   private accepting = false; // Tab re-entrancy latch: one decoration accept lands at a time
+  private pendingTrigger: ReturnType<typeof setTimeout> | undefined;
   // A pending-insert edit is in flight: its change/selection events fire
   // before symbolLen and `pending` are booked, so a resolve off that window
   // reads a stale zero-length symbol and reports a spurious collision. No
@@ -319,12 +322,12 @@ export class DiffReplayController {
     const retroLen = span ? span.len : newSrc.length || oldSrc.length;
     this.session = { uri: editor.document.uri, anchorOffset, symbolLen: oldSrc.length, selfDelta: 0, steps, index: 0, retrospective, dramatic, spec, lineMode, retroOffset, retroLen, ledger: [] };
     void vscode.commands.executeCommand("setContext", ACTIVE_CONTEXT, true);
-    this.lastAcceptAt = undefined;
     this.diverged = false;
     this.typing = false;
     this.foreignPaused = false;
     this.editedCurrentLine = false;
     this.clearSettle();
+    this.cancelPendingTrigger();
     const tally = steps.reduce(
       (a, s) => ((a[this.surfaceOf(s)] = (a[this.surfaceOf(s)] ?? 0) + 1), a),
       {} as Record<string, number>,
@@ -356,6 +359,7 @@ export class DiffReplayController {
     void vscode.commands.executeCommand("setContext", DECORATION_CONTEXT, false);
     void vscode.commands.executeCommand("setContext", ACTIVE_CONTEXT, false);
     this.clearSettle();
+    this.cancelPendingTrigger();
     this.session = undefined;
   }
 
@@ -374,7 +378,14 @@ export class DiffReplayController {
     if (resolved.kind !== "ok" || !resolved.cleanParse) return false;
     if (editor.selection.active.line !== resolved.range.start.line) return false;
     this.output.appendLine("[diff-replay] tab nudged the ghost");
-    await vscode.commands.executeCommand("editor.action.inlineSuggest.trigger");
+    // Fire, never await. `inlineSuggest.trigger` resolves only once VS Code has
+    // polled EVERY registered inline-completion provider, so awaiting it hands
+    // our Tab latency to the slowest extension in the window. Measured on the
+    // moe-refix guide: our own ghost served in 82ms, this command resolving at
+    // ~1.5s, and the accept handler blocked behind it for 1703ms. The accept
+    // latches (`accepting`, `pending`) DROP Tabs pressed while a handler is in
+    // flight, so that wait was a dropped keystroke on every step.
+    void vscode.commands.executeCommand("editor.action.inlineSuggest.trigger");
     return true;
   }
 
@@ -398,7 +409,6 @@ export class DiffReplayController {
     );
 
     this.renderCurrent(editor);
-    this.lastAcceptAt = Date.now();
   }
 
   // A buffer change while a replay is active. Our own accept/swap (its text matches
@@ -496,6 +506,11 @@ export class DiffReplayController {
     this.scheduleSettle();
   }
 
+  private cancelPendingTrigger(): void {
+    if (this.pendingTrigger) clearTimeout(this.pendingTrigger);
+    this.pendingTrigger = undefined;
+  }
+
   private clearSettle(): void {
     if (this.settleTimer) clearTimeout(this.settleTimer);
     this.settleTimer = undefined;
@@ -530,6 +545,7 @@ export class DiffReplayController {
   // the break is a hunk the human didn't touch, SURFACES.
   private scheduleSettle(): void {
     this.clearSettle();
+    this.cancelPendingTrigger();
     this.settleTimer = setTimeout(() => {
       this.settleTimer = undefined;
       this.typing = false;
@@ -588,6 +604,7 @@ export class DiffReplayController {
     this.onCollision?.();
     this.output.appendLine("[diff-replay] collision: a step's node was edited away — surfacing");
     this.clearSettle();
+    this.cancelPendingTrigger();
     this.gestures.hide();
     this.clearDecorations(editor);
     void vscode.commands.executeCommand("setContext", DECORATION_CONTEXT, false);
@@ -613,6 +630,7 @@ export class DiffReplayController {
       return;
     }
     this.clearSettle();
+    this.cancelPendingTrigger();
     const removal = s.pending ? this.removePending(editor) : Promise.resolve();
     void removal
       .then(() => {
@@ -638,11 +656,25 @@ export class DiffReplayController {
     if (resolved.kind !== "ok") return; // a collision surfaces/holds via the drive path
     if (document.uri.toString() !== s.uri.toString()) return;
     if (position.line !== resolved.range.start.line) return;
-    await vscode.commands.executeCommand("editor.action.inlineSuggest.trigger");
-    if (this.lastAcceptAt !== undefined) {
-      this.output.appendLine(`[diff-replay] retrigger ${Date.now() - this.lastAcceptAt}ms`);
-      this.lastAcceptAt = undefined;
-    }
+    // Same grace window as the walk (controller.ts): VS Code re-queries the
+    // providers on the accept's own document change, and a trigger fired on top
+    // of that costs a full model update cycle that a Tab arriving mid-cycle
+    // waits out. Ask only if it did not arrive on its own.
+    if (s.lastServed && s.lastServed.text === resolved.text && s.lastServed.range.isEqual(resolved.range)) return;
+    if (this.pendingTrigger) clearTimeout(this.pendingTrigger);
+    this.pendingTrigger = setTimeout(() => {
+      this.pendingTrigger = undefined;
+      const live = this.session;
+      if (live?.lastServed && live.lastServed.text === resolved.text && live.lastServed.range.isEqual(resolved.range)) {
+        this.output.appendLine("[diff-replay] ghost arrived on VS Code's own re-query — no trigger sent");
+        return;
+      }
+      const issued = Date.now();
+      void Promise.resolve(vscode.commands.executeCommand("editor.action.inlineSuggest.trigger")).then(() => {
+        const ms = Date.now() - issued;
+        if (ms >= 80) this.output.appendLine(`[perf] diff-replay: inlineSuggest.trigger resolved in ${ms}ms`);
+      });
+    }, TRIGGER_GRACE_MS);
   }
 
   // Render the current step on the surface its shape needs, then drive the walk to
@@ -856,6 +888,7 @@ export class DiffReplayController {
     const s = this.session;
     if (!s) return; // only reachable while a decoration is shown (DECORATION_CONTEXT set)
     this.clearSettle();
+    this.cancelPendingTrigger();
     if (s.pending) {
       // The bytes are already in the buffer — Tab confirms, no re-apply.
       this.keepPending(editor);
@@ -911,6 +944,7 @@ export class DiffReplayController {
     const s = this.session;
     if (!s) return;
     this.clearSettle();
+    this.cancelPendingTrigger();
     this.gestures.hide();
     this.clearDecorations(editor);
     void vscode.commands.executeCommand("setContext", DECORATION_CONTEXT, false);

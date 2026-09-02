@@ -73,6 +73,15 @@ export class ProgramCounter {
     if (this.inFlight === i) this.inFlight = undefined;
   }
 
+  /** Un-do step `i`: the bytes on disk say it is not landed after all (the human
+   *  rolled it back). Ground truth beats the counter — the counter is memory,
+   *  and memory is what goes stale when a file changes underneath it. */
+  markPending(i: number): void {
+    this.done.delete(i);
+    this.blocked.delete(i);
+    if (this.inFlight === i) this.inFlight = undefined;
+  }
+
   /** The persistable position: done + skipped. Blocked/in-flight are live-session
    *  states — a reload resolves them by re-deriving from the files. */
   snapshot(): { done: number[]; skipped: number[] } {
