@@ -131,6 +131,26 @@ export function findItemByName(node: SyntaxNode, src: string, name: string, spec
   return hit;
 }
 
+/**
+ * How many items in `src` answer to `name`. One is the honest case. More than
+ * one means `findItemByName`'s "first in document order wins" rule is a COIN
+ * FLIP between real candidates — two `run` methods in different impls, a C#
+ * overload pair, a `### Fixed` heading per release in a CHANGELOG — and the
+ * step either lands the sandbox's bytes on the wrong item or replays a no-op
+ * while the change the agent actually made never arrives. Neither is visible in
+ * the buffer afterwards, so the callers surface the count rather than letting
+ * the human find it in review. Zero means the symbol is not there at all, which
+ * the callers already report.
+ */
+export function countItemsByName(node: SyntaxNode, src: string, name: string, spec: LanguageSpec = RUST): number {
+  let n = 0;
+  (function walk(current: SyntaxNode): void {
+    if (spec.namedItemTypes.has(current.type) && spec.nameOf(current, src) === name) n++;
+    for (const c of namedChildren(current)) walk(c);
+  })(node);
+  return n;
+}
+
 function findItem(
   node: SyntaxNode,
   src: string,
@@ -192,8 +212,16 @@ export function leadingTriviaStart(src: string, itemStart: number, spec: Languag
   while (lineStart > 0) {
     const prevLineEnd = lineStart - 1; // the '\n' terminating the previous line
     const prevLineStart = src.lastIndexOf("\n", prevLineEnd - 1) + 1;
-    if (!isTrivia(src.slice(prevLineStart, prevLineEnd))) break;
-    result = prevLineStart;
+    const prevLine = src.slice(prevLineStart, prevLineEnd);
+    if (!isTrivia(prevLine)) break;
+    // The first VISIBLE byte of the trivia line, not the line start: the item's
+    // own start already excludes its indent, and a symbol whose leading bytes
+    // change shape depending on whether it carries a doc comment makes every
+    // downstream comparison read a phantom indent change (the diff, the insert
+    // proof's left context, resume's landed check). The indent belongs to the
+    // container's layout; the create path takes it from the target's own
+    // sibling column (planCreateInsertion).
+    result = prevLineStart + /^[ \t]*/.exec(prevLine)![0].length;
     lineStart = prevLineStart;
   }
   return result;

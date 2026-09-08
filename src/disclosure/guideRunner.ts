@@ -5,7 +5,7 @@ import { ReplayGuide, ReplayStep, parseGuide } from "./guide";
 import { DisclosureController } from "./controller";
 import { ReplayOrchestrator } from "./orchestrator";
 import { parseRoot } from "./diff";
-import { findItemByName, leadingTriviaStart, walkableSource, SyntaxNode } from "./walk";
+import { countItemsByName, findItemByName, leadingTriviaStart, walkableSource, SyntaxNode } from "./walk";
 import { planCreateInsertion, separatorToInsert, splitLeadingPad } from "./insertion";
 import { FileSegment, planFileWalk, resumeIndex, splitTrailing } from "./fileWalk";
 import { patchSummary } from "./lineDiff";
@@ -894,10 +894,15 @@ export class GuideRunner {
   // — a self-contained guide still replays. Returns undefined bytes when unresolvable;
   // the caller reports it. Both come from real files, so ground truth holds (invariant 1).
   private resolveStepBytes(editor: vscode.TextEditor, step: ReplayStep, spec: LanguageSpec): { before?: string; after?: string } {
-    const before =
-      step.action === "create"
-        ? undefined
-        : step.before ?? this.symbolFrom(editor.document.getText(), step.symbol, spec);
+    let before: string | undefined;
+    if (step.action !== "create") {
+      if (step.before !== undefined) before = step.before;
+      else {
+        const text = editor.document.getText();
+        this.warnIfAmbiguous(step, text, spec, "target");
+        before = this.symbolFrom(text, step.symbol, spec);
+      }
+    }
     const after =
       step.action === "delete"
         ? undefined
@@ -964,6 +969,22 @@ export class GuideRunner {
     return extractSymbol(text, symbol, spec);
   }
 
+  // A name that answers for more than one item makes "first in document order"
+  // a coin flip between real candidates, and the wrong pick is invisible in the
+  // buffer afterwards — the step reports done and the change the agent made
+  // never arrives. The engine cannot choose for the human (invariant 2), so it
+  // says what it is about to do and leaves the call at the keyboard.
+  private warnIfAmbiguous(step: ReplayStep, text: string, spec: LanguageSpec, side: "target" | "sandbox"): void {
+    const n = countItemsByName(parseRoot(text, spec) as unknown as SyntaxNode, text, step.symbol, spec);
+    if (n < 2) return;
+    this.output.appendLine(
+      `[guide] step ${step.id}: \`${step.symbol}\` names ${n} items in the ${side} ${step.file} — replaying the FIRST; check it is the one you meant`,
+    );
+    vscode.window.showWarningMessage(
+      `Human Replay: step ${step.id} — \`${step.symbol}\` names ${n} items in the ${side} file. The replay uses the first one.`,
+    );
+  }
+
   // Read the step's symbol from the sandbox tree (the session's picked sandbox,
   // else config `humanReplay.sandboxRoot`, + the step's file path) — the source
   // of the `after` bytes for a lean guide.
@@ -976,7 +997,9 @@ export class GuideRunner {
     const rel = step.file.split(":")[0];
     const full = path.join(root, rel);
     try {
-      return this.symbolFrom(fs.readFileSync(full, "utf8"), step.symbol, spec);
+      const text = fs.readFileSync(full, "utf8");
+      this.warnIfAmbiguous(step, text, spec, "sandbox");
+      return this.symbolFrom(text, step.symbol, spec);
     } catch {
       this.output.appendLine(`[guide] step ${step.id}: failed to read sandbox file ${full}`);
       return undefined;

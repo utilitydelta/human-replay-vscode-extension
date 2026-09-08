@@ -58,14 +58,36 @@ export function bakeLeftContext(src: string, point: number): string {
   }
 }
 
+// Blank lines are cheap bytes, so the scan past them is generous: the cap is a
+// FAIL-LOUD boundary, not a tuning knob. Past it the context is still blank
+// while real bytes remain below, which ratifies nothing — the step collides and
+// surfaces. Eight was too tight to say that honestly: nine blank lines under an
+// append is a document, not an attack.
+const RIGHT_CTX_CAP_LINES = 64;
+
 /** Right context for an insert whose old-coords point is `opStart`: the rest
  *  of the attach line plus the next full line of `src` (old coords) — the
- *  unlanded tail the inserted bytes must sit flush against. */
+ *  unlanded tail the inserted bytes must sit flush against. Keeps taking whole
+ *  lines while the context is still whitespace-only, up to the cap: a blank
+ *  line below the attach point is layout, not an absence of a tail, and
+ *  stopping there hands `proofOk` a blank side that can only ratify
+ *  positionally (an insert above a blank line then collides — the markdown
+ *  table-row incident).
+ *
+ *  A context blank all the way to the END OF THE SOURCE is the real no-tail
+ *  case: an append at the end of the symbol, which `proofOk` ratifies against
+ *  the tail. A context still blank at the CAP is neither — it is a tail this
+ *  function refused to read, so nothing can ratify it and the step collides.
+ *  That is the honest outcome (surface, never guess), and the cap is set high
+ *  enough that reaching it means something pathological. */
 export function bakeRightContext(src: string, opStart: number): string {
-  const nl = src.indexOf("\n", opStart);
-  if (nl < 0) return src.slice(opStart);
-  const nl2 = src.indexOf("\n", nl + 1);
-  return src.slice(opStart, nl2 < 0 ? src.length : nl2 + 1);
+  let end = opStart;
+  for (let lines = 0; lines < RIGHT_CTX_CAP_LINES; lines++) {
+    const nl = src.indexOf("\n", end);
+    end = nl < 0 ? src.length : nl + 1;
+    if (lines >= 1 && (src.slice(opStart, end).trim() !== "" || end >= src.length)) break;
+  }
+  return src.slice(opStart, end);
 }
 
 /** Bake proofs onto every pure insert of an ascending-ordered op list. The
@@ -108,7 +130,14 @@ export function proofOk(symText: string, p: number, proof: InsertProof): boolean
       symText.slice(p - proof.left.length, p) === proof.left &&
       (p === proof.left.length || symText[p - proof.left.length - 1] === "\n");
   if (!leftOk) return false;
-  return rightBlank ? p === 0 || p === symText.length : symText.slice(p, p + proof.right.length) === proof.right;
+  // A blank right side is the end-of-symbol append: everything from the point to
+  // the end of the symbol is the whitespace the context carries. Ratify it as
+  // BYTES against the tail, not as `p === symText.length` — a symbol whose bytes
+  // end in a newline (every markdown section, every function whose extraction
+  // keeps its trailing line) puts the point one byte short of the end, and the
+  // positional rule refused every one of them. Tail equality still pins the
+  // point exactly: only one offset satisfies it.
+  return rightBlank ? p === 0 || symText.slice(p) === proof.right : symText.slice(p, p + proof.right.length) === proof.right;
 }
 
 /** Why a pure insert did NOT land — the forensic line for the output channel.
@@ -129,7 +158,17 @@ export function explainInsertCollision(
     : p >= proof.left.length && symText.slice(p - proof.left.length, p) === proof.left
       ? "ok"
       : "mismatch";
-  const rightState = blank(proof.right) ? "blank" : symText.slice(p, p + proof.right.length) === proof.right ? "ok" : "mismatch";
+  // Mirrors proofOk's two rules, so the channel names the leg that actually
+  // refused: a blank right side is ratified against the symbol's TAIL, and
+  // reporting it as merely "blank" would send the next reader looking at the
+  // wrong end of the step.
+  const rightState = blank(proof.right)
+    ? symText.slice(p) === proof.right
+      ? "blank, tail matches"
+      : `blank, tail is ${JSON.stringify(symText.slice(p).slice(0, 24))}`
+    : symText.slice(p, p + proof.right.length) === proof.right
+      ? "ok"
+      : "mismatch";
   const arith = t.dirty
     ? "ledger dirty (an edit straddled the point)"
     : `proof refused point ${p} (left ${leftState}, right ${rightState})`;
@@ -189,6 +228,8 @@ export function resolveInsertPoint(
   if (n !== 1) return null;
   const cand = first + proof.left.length;
   if (cand > t.point) return null;
-  const rightOk = blank(proof.right) ? cand === symText.length : symText.slice(cand, cand + proof.right.length) === proof.right;
+  const rightOk = blank(proof.right)
+    ? symText.slice(cand) === proof.right // same tail-equality rule as proofOk
+    : symText.slice(cand, cand + proof.right.length) === proof.right;
   return rightOk ? cand : null;
 }

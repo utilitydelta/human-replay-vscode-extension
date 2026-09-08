@@ -1,0 +1,51 @@
+export function declarationGhost(
+  served: string,
+  sentence: string,
+  languageId: string,
+  eol: string,
+  indent: string,
+  unit: string,
+): DeclarationGhost {
+  const head = typeof served === "string" ? served.replace(/\s+$/, "") : "";
+  const style = docStyleFor(languageId);
+  const above = docCommentAbove(sentence, languageId, indent.replace(/\t/g, "    ").length);
+  const lines: string[] = [];
+  // The first line of the item lands at the caret, which already sits after `indent`; every
+  // later line is a fresh line and carries the indent itself.
+  if (above !== undefined) {
+    above.split("\n").forEach((l, i) => lines.push(i === 0 ? l : indent + l));
+    lines.push(indent + head);
+  } else {
+    lines.push(head);
+  }
+  // C# puts the brace on its own line, so the bound's one content line is the head without it;
+  // a head that names a type or ends its parameter list opens a body there.
+  const allman =
+    languageId === "csharp" && !/\{\s*$/.test(head) && (/\b(class|struct|interface|enum|record)\b/.test(head) || /\)\s*$/.test(head));
+  const opensBody = style === "docstring" ? /:\s*$/.test(head) : allman || /\{\s*$/.test(head);
+  let caretLine: number;
+  let caretColumn: number;
+  if (opensBody && style === "docstring") {
+    const body = indent + unit;
+    lines.push(`${body}"""${sentence.replace(/\s+/g, " ").trim()}"""`);
+    lines.push(body);
+    caretLine = lines.length - 1;
+    caretColumn = body.length;
+  } else if (opensBody) {
+    const body = indent + unit;
+    if (allman) {
+      lines.push(`${indent}{`);
+    }
+    lines.push(body);
+    lines.push(`${indent}}`);
+    caretLine = lines.length - 2;
+    caretColumn = body.length;
+  } else {
+    lines.push(indent);
+    caretLine = lines.length - 1;
+    caretColumn = indent.length;
+  }
+  const text = lines.join(eol);
+  const caretOffset = lines.slice(0, caretLine).reduce((n, l) => n + l.length + eol.length, 0) + caretColumn;
+  return { text, caretOffset };
+}

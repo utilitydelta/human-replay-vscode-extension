@@ -1,0 +1,76 @@
+import { Reading, Series } from "./series";
+
+/** Cap applied at the end of a fold, not per sample. */
+export const DEFAULT_CAP = 1000;
+
+export interface AccumulatorOptions {
+  cap: number;
+  dropNegatives: boolean;
+}
+
+/**
+ * A bounded accumulator over a stream of readings.
+ *
+ * The cap is applied at the end, so a burst that overshoots and then corrects
+ * still reports the corrected total.
+ */
+export class Accumulator {
+  private readings: number[] = [];
+  private labels = new Map<string, number>();
+
+  constructor(private readonly options: AccumulatorOptions) {}
+
+  /** Push a reading, tagged by label. A label already seen keeps its index. */
+  push(label: string, value: number): number {
+    const index = this.readings.length;
+    this.readings.push(value);
+    if (!this.labels.has(label)) {
+      this.labels.set(label, index);
+    }
+    return index;
+  }
+
+  total(): number {
+    let sum = 0;
+    for (const reading of this.readings) {
+      if (reading > 0) {
+        sum += reading;
+      } else {
+        sum -= 1;
+      }
+    }
+    if (sum > this.options.cap) {
+      sum = this.options.cap;
+    }
+    return sum;
+  }
+
+  private drainNegatives(): number[] {
+    const dropped: number[] = [];
+    const kept: number[] = [];
+    for (const reading of this.readings) {
+      if (reading < 0) {
+        dropped.push(reading);
+      } else {
+        kept.push(reading);
+      }
+    }
+    this.readings = kept;
+    return dropped;
+  }
+}
+
+export function collectAll(values: number[], cap: number): Accumulator {
+  const acc = new Accumulator({ cap, dropNegatives: false });
+  values.forEach((value, i) => {
+    acc.push(`series-${i}`, value);
+  });
+  return acc;
+}
+
+export type Fold = (series: Series, reading: Reading) => Series;
+
+export const foldReading: Fold = (series, reading) => ({
+  ...series,
+  samples: [...series.samples, reading],
+});

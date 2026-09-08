@@ -1,0 +1,41 @@
+:root {
+  --gap: 8px;
+  --ink: #1a1a1a;
+  --paper: #fdfdfb;
+}
+
+/* The readings table: dense by default, roomy on wide screens. */
+.readings,
+.readings-compact {
+  color: var(--ink);
+  background: var(--paper);
+  padding: var(--gap);
+  border-collapse: collapse;
+}
+
+.readings td {
+  padding: calc(var(--gap) / 2);
+  border-bottom: 1px solid #e5e5e5;
+}
+
+.readings .negative {
+  color: #b3261e;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (min-width: 900px) {
+  .readings {
+    padding: calc(var(--gap) * 2);
+  }
+
+  .readings td {
+    padding: var(--gap);
+  }
+}
+
+@supports (display: grid) {
+  .readings-grid {
+    display: grid;
+    grid-template-columns: 1fr auto;
+  }
+}

@@ -25,6 +25,7 @@ const sepBundle = path.join(__dirname, ".insertion.bundle.cjs");
 fs.writeFileSync(
   path.join(__dirname, ".insertion.entry.ts"),
   `export { separatorToInsert, planCreateInsertion } from "../src/disclosure/insertion";\n` +
+    `export { extractSymbol } from "../src/disclosure/resume";\n` +
     `export { RUST, TYPESCRIPT, PYTHON, MARKDOWN } from "../src/disclosure/language";\n`,
 );
 esbuild.buildSync({
@@ -35,7 +36,7 @@ esbuild.buildSync({
   platform: "node",
   external: EXTERNALS,
 });
-const { separatorToInsert, planCreateInsertion, RUST, TYPESCRIPT, PYTHON, MARKDOWN } = require(sepBundle);
+const { separatorToInsert, planCreateInsertion, extractSymbol, RUST, TYPESCRIPT, PYTHON, MARKDOWN } = require(sepBundle);
 
 const walkBundle = path.join(__dirname, ".walk-byname.bundle.cjs");
 fs.writeFileSync(
@@ -173,15 +174,22 @@ for (const { name, target, symbol, expectOrder } of PLACEMENT) {
   });
 }
 
-test("planCreateInsertion: documented method — cursor parks at column 0, symbol supplies its own pad", () => {
-  // extractSymbol starts a documented symbol at its LINE START, pad included; a
-  // scaffold pad on top would double-indent the first line.
+test("planCreateInsertion: documented method — the scaffold supplies the column, the symbol supplies the code", () => {
+  // A symbol's bytes never carry their own first-line indent, with trivia or
+  // without (leadingTriviaStart). The column is the TARGET's, read off the
+  // anchor sibling, so a symbol nested at a different depth in the sandbox
+  // still lands at the target's depth.
   const sandbox = `impl Cache {\n    pub fn a(&self) -> u64 {\n        self.bytes\n    }\n\n    /// Parks a batch.\n    #[inline]\n    pub fn parked(&mut self, n: u64) {\n        self.bytes += n;\n    }\n}\n`;
   const target = `impl Cache {\n    pub fn a(&self) -> u64 {\n        self.bytes\n    }\n}\n`;
   const plan = planCreateInsertion(target, sandbox, "parked", RUST);
   assert.strictEqual(plan.kind, "container");
-  assert.strictEqual(plan.scaffold, "\n\n", "no scaffold pad — the symbol carries its own");
-  const symbolBytes = "    /// Parks a batch.\n    #[inline]\n    pub fn parked(&mut self, n: u64) {\n        self.bytes += n;\n    }";
+  assert.strictEqual(plan.scaffold, "\n\n    ", "the scaffold carries the target's column");
+  const symbolBytes = extractSymbol(sandbox, "parked", RUST);
+  assert.strictEqual(
+    symbolBytes,
+    "/// Parks a batch.\n    #[inline]\n    pub fn parked(&mut self, n: u64) {\n        self.bytes += n;\n    }",
+    "the extracted symbol starts at the doc comment's first visible byte",
+  );
   const built = landCreate(target, plan, symbolBytes);
   assert.strictEqual(built, sandbox, "target becomes byte-identical to the sandbox");
 });

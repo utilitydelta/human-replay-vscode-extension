@@ -1,0 +1,70 @@
+export function declarationGhost(
+  served: string,
+  sentence: string,
+  languageId: string,
+  eol: string,
+  indent: string,
+  unit: string,
+): DeclarationGhost {
+  const head = typeof served === "string" ? served.replace(/\s+$/, "") : "";
+  const style = docStyleFor(languageId);
+  const above = docCommentAbove(sentence, languageId, indent.replace(/\t/g, "    ").length);
+  const lines: string[] = [];
+  // The first line of the item lands at the caret, which already sits after `indent`; every
+  // later line is a fresh line and carries the indent itself.
+  // A head can span lines: an attribute or decorator the bound read through sits above the
+  // declaration proper (`#[derive(Debug)]` then `pub enum Kind {`); every line after the
+  // item's first carries the indent.
+  const headLines = head === "" ? [""] : head.split("\n");
+  if (above !== undefined) {
+    above.split("\n").forEach((l, i) => lines.push(i === 0 ? l : indent + l));
+    headLines.forEach((l) => lines.push(indent + l));
+  } else {
+    headLines.forEach((l, i) => lines.push(i === 0 ? l : indent + l));
+  }
+  // C# puts the brace on its own line, so the bound's one content line is the head without it;
+  // a head that names a type or ends its parameter list opens a body there.
+  // A head that ends with `;` or `}` closed itself (`public record Point(int X, int Y);`, an
+  // auto-property) and opens nothing, whatever words it carries.
+  // Judged on the head's last line with any trailing line comment removed (`...); // a point`
+  // is still closed); what renders is the head as served.
+  const lastLine = head.slice(head.lastIndexOf("\n") + 1);
+  const bare = stripTrailingLineComment(lastLine, style === "docstring" ? "#" : "//").trimEnd();
+  const closed = /[;}]$/.test(bare);
+  const allman =
+    languageId === "csharp" && !closed && !/\{$/.test(bare) && (/\b(class|struct|interface|enum|record)\b/.test(bare) || /\)$/.test(bare));
+  const opensBody = style === "docstring" ? /:$/.test(bare) : allman || /\{$/.test(bare);
+  let caretLine: number;
+  let caretColumn: number;
+  if (opensBody && style === "docstring") {
+    const body = indent + unit;
+    lines.push(`${body}"""${sentence.replace(/\s+/g, " ").trim()}"""`);
+    lines.push(body);
+    caretLine = lines.length - 1;
+    caretColumn = body.length;
+  } else if (opensBody) {
+    const body = indent + unit;
+    if (allman) {
+      lines.push(`${indent}{`);
+    }
+    lines.push(body);
+    lines.push(`${indent}}`);
+    caretLine = lines.length - 2;
+    caretColumn = body.length;
+  } else if (freshLineAfter(eol, indent) !== "") {
+    lines.push(indent);
+    caretLine = lines.length - 1;
+    caretColumn = indent.length;
+  } else {
+    // Module level: no fresh line (see `freshLineAfter`). An empty head would leave an empty
+    // last line under the doc comment, and that is the shape the editor drops, so it goes too.
+    if (head === "" && lines.length > 1) {
+      lines.pop();
+    }
+    caretLine = lines.length - 1;
+    caretColumn = lines[caretLine].length;
+  }
+  const text = lines.join(eol);
+  const caretOffset = lines.slice(0, caretLine).reduce((n, l) => n + l.length + eol.length, 0) + caretColumn;
+  return { text, caretOffset };
+}

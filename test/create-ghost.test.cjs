@@ -1,12 +1,15 @@
 // The create surface's accept-ability invariant.
 //
-// A symbol with leading trivia extracts from its LINE START, so its bytes begin
-// with the line's indent. VS Code's Tab-commit for inline suggestions is gated
-// on `inlineSuggestionHasIndentationLessThanTabSize`: a ghost that leads with a
+// VS Code's Tab-commit for inline suggestions is gated on
+// `inlineSuggestionHasIndentationLessThanTabSize`: a ghost that leads with a
 // full indent CANNOT be Tab-accepted — Tab indents, the typed tab dismisses the
-// ghost, and nothing lands (the step 1.3 'park a batch' bug). The runner types
-// the pad as real bytes (splitLeadingPad) and serves the rest, so these tests
-// pin the pair of invariants that keeps the gesture working:
+// ghost, and nothing lands (the step 1.3 'park a batch' bug). Extraction is what
+// keeps that from happening: a symbol's bytes start at its first VISIBLE byte,
+// trivia or no trivia, so the served ghost never opens with whitespace and the
+// column comes from the target (planCreateInsertion's scaffold). splitLeadingPad
+// stays as the belt: whatever leading whitespace does reach the surface is typed
+// as real bytes, never ghosted. These tests pin the invariants that keep the
+// gesture working, over the nested, trivia-carrying shapes that used to break it:
 //   - the first ghost of a create never leads with indentation;
 //   - pad + replayed rest is byte-identical to the extracted symbol.
 //
@@ -102,8 +105,8 @@ for (const c of CASES) {
   test(`create ghost never leads with indentation — ${c.name}`, () => {
     const sym = extractSymbol(c.file, c.symbol, c.spec);
     assert.ok(sym !== undefined, "corpus symbol must resolve");
+    assert.ok(/^\S/.test(sym), "extraction starts at the symbol's first visible byte, indent excluded");
     const { pad, rest } = splitLeadingPad(sym);
-    assert.ok(pad.length > 0, "corpus must be the indented, trivia-carrying shape");
     assert.strictEqual(pad + rest, sym, "the split invents and drops nothing");
     assert.ok(!/^[ \t]/.test(rest), "the served bytes start at the first visible column");
 
@@ -119,8 +122,25 @@ for (const c of CASES) {
   });
 }
 
-// A symbol with no leading indent (top-level, or no trivia so extraction starts
-// at the item) splits to an empty pad — the runner types nothing.
+// The runner's `if (pad) { type it as real bytes }` branch is NOT dead code:
+// extraction never produces a pad, but a SELF-CONTAINED guide's After fence
+// carries whatever the author wrote between the backticks, indent included, and
+// those bytes reach the create path without passing through extraction. This is
+// that branch's only remaining input, so it is the one this pins.
+test("create ghost: fenced bytes carrying their own indent still split, land, and stay Tab-acceptable", () => {
+  const fenced = `    /// Parks a batch.\n    pub fn parked(&mut self, n: u64) {\n        self.bytes += n;\n    }`;
+  const { pad, rest } = splitLeadingPad(fenced);
+  assert.strictEqual(pad, "    ", "the author's indent is the pad the runner types as real bytes");
+  assert.strictEqual(pad + rest, fenced, "the split invents and drops nothing");
+  assert.ok(!/^[ \t]/.test(rest), "the served ghost opens on a committable byte");
+  assert.ok(walkableSource(rest, RUST), "and the rest still routes to the walk");
+  const steps = computeSteps(rest, RUST);
+  assert.ok(!/^[ \t]/.test(steps[0].insert), "the first walk ghost must be Tab-acceptable");
+  assert.strictEqual(pad + replayWalk(steps), fenced, "pad + walk is byte-identical to the fenced bytes");
+});
+
+// A symbol with no leading indent (every extracted one, and a fence written at
+// column 0) splits to an empty pad — the runner types nothing.
 test("splitLeadingPad: no indent means no pad", () => {
   assert.deepStrictEqual(splitLeadingPad("fn f() {}\n"), { pad: "", rest: "fn f() {}\n" });
   assert.deepStrictEqual(splitLeadingPad(""), { pad: "", rest: "" });

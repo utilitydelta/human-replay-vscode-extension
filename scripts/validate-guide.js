@@ -38,7 +38,7 @@ fs.writeFileSync(
     `export { parseRoot } from "../src/disclosure/diff";\n` +
     `export { languageForFile } from "../src/disclosure/language";\n` +
     `export { planCreateInsertion, separatorToInsert, splitLeadingPad } from "../src/disclosure/insertion";\n` +
-    `export { walkableSource } from "../src/disclosure/walk";\n` +
+    `export { walkableSource, countItemsByName } from "../src/disclosure/walk";\n` +
     `export { lineDiffSteps } from "../src/disclosure/lineDiff";\n` +
     `export { resolveStepNoTree } from "../src/disclosure/replay";\n` +
     `export { planFileWalk, splitTrailing } from "../src/disclosure/fileWalk";\n` +
@@ -52,7 +52,7 @@ esbuild.buildSync({
   platform: "node",
   external: ["tree-sitter", "tree-sitter-rust", "tree-sitter-c-sharp", "tree-sitter-typescript", "tree-sitter-python", "@tree-sitter-grammars/tree-sitter-markdown", "tree-sitter-html", "tree-sitter-css"],
 });
-const { parseGuide, extractSymbol, stepAlreadyLanded, classifyReplay, buildReplaySteps, resolveStep, parseRoot, languageForFile, planCreateInsertion, separatorToInsert, splitLeadingPad, walkableSource, lineDiffSteps, resolveStepNoTree, planFileWalk, splitTrailing, isWeak, isNoneQuestion, gates } =
+const { parseGuide, extractSymbol, stepAlreadyLanded, classifyReplay, buildReplaySteps, resolveStep, parseRoot, languageForFile, planCreateInsertion, separatorToInsert, splitLeadingPad, walkableSource, countItemsByName, lineDiffSteps, resolveStepNoTree, planFileWalk, splitTrailing, isWeak, isNoneQuestion, gates } =
   require(bundle);
 const cleanup = () => {
   fs.rmSync(bundle, { force: true });
@@ -107,6 +107,23 @@ console.log(`guide "${guide.feature}": ${guide.steps.length} steps, ${guide.inva
 const failures = [];
 const note = (step, status, detail = "") =>
   console.log(`  ${status.padEnd(9)} ${step.id.padEnd(5)} ${step.action.padEnd(11)} ${step.symbol}${detail ? ` — ${detail}` : ""}`);
+
+// A symbol name that answers for more than one item makes "first in document
+// order" a coin flip between real candidates — a `run` per impl, a C# overload
+// pair, a `### Fixed` heading per release. The replay picks the first on both
+// sides, so the step either lands on the wrong item or replays a no-op while
+// the agent's actual change never arrives, and neither is visible afterwards.
+// A warning, not a failure: the guide format has no way to qualify a name yet,
+// so the author's move is to rename or re-scope the step, and telling them at
+// authoring time is the whole point.
+let ambiguous = 0;
+const noteAmbiguity = (step, text, spec, side) => {
+  if (!spec || text === undefined) return;
+  const n = countItemsByName(parseRoot(text, spec), text, step.symbol, spec);
+  if (n < 2) return;
+  ambiguous++;
+  note(step, "WARN", `\`${step.symbol}\` names ${n} items in the ${side} ${step.file} — the replay uses the FIRST`);
+};
 
 // ---------------------------------------------------------------------------
 // The retrospective audit. The gate is the step's thinking point, so a guide
@@ -184,6 +201,26 @@ for (const step of guide.steps) {
   const rel = step.file.split(":")[0];
   const targetText = targetTextFor(rel);
   const sandboxText = read(path.join(sandboxRoot, rel));
+
+  // Every action but create-file edits a file that has to already be there. A
+  // fenced step carries its own Before bytes, so the missing file used to slip
+  // past the "symbol not found" check below and die on `undefined.indexOf` a
+  // hundred lines later — a stack trace where the author needed a path. Almost
+  // always the wrong targetRoot on the command line.
+  if (step.action !== "create-file" && targetText === undefined) {
+    failures.push(step.id);
+    note(step, "FAIL", `target file ${rel} unreadable — check the targetRoot argument`);
+    continue;
+  }
+
+  // Whole-file steps address the file, not a name, so there is nothing to be
+  // ambiguous about; every other action resolves its bytes by symbol on both
+  // sides, and either side being ambiguous is worth the author's attention.
+  if (step.action !== "create-file" && step.action !== "patch") {
+    const stepSpec = languageForFile(step.file);
+    noteAmbiguity(step, targetText, stepSpec, "target");
+    noteAmbiguity(step, sandboxText, stepSpec, "sandbox");
+  }
 
   if (step.action === "create-file") {
     // A fenced create-file lands its After fence — the file's SKELETON, grown
@@ -354,6 +391,9 @@ for (const rel of createdFiles) {
 }
 
 cleanup();
+console.log(
+  `\nambiguous symbol names: ${ambiguous}${ambiguous ? " (WARN above — the replay takes the first match on both sides)" : ""}`,
+);
 console.log(
   `\nretrospectives: ${audit.gated} gated, ${audit.wired} wired (\`none\`), ${audit.ungated} ungated, ` +
     `${audit.weak} weak, ${audit.overLength} over-length`,

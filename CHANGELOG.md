@@ -1,5 +1,68 @@
 # Changelog
 
+## 2.1.0
+
+Eight defects, and the suite found none of them. `scripts/harvest-replay.js`
+harvests every changed symbol out of a repo's git history, pairs it
+before/after, and pushes it through the real engine on the controller's exact
+loop. It found 38 failures in the first 794 real symbol pairs it ran. The
+oracles were green the whole time, because every corpus in them was written by
+someone who already knew how the engine worked.
+
+All eight are fixed. The same harness now runs 4,477 modify pairs and 2,631
+creates out of nine repositories with zero failures, and the headless suite went
+from 524 tests to 1,836.
+
+- **A symbol never carries its own first-line indent.** Extraction started at the
+  line start when an item had a doc comment above it and at the first visible
+  byte when it did not, so the same function extracted two different ways
+  depending on whether it was documented. Every comparison downstream — the
+  diff, the insert proof's left context, resume's landed check — read a phantom
+  indent change on top of the real one. The indent is layout of the container,
+  not bytes of the symbol.
+- **A created symbol's column is copied from the target, never counted.** The
+  scaffold used to measure the anchor sibling's column and re-spell it with
+  spaces, so a create into a tab-indented file landed a byte that exists in
+  neither the sandbox nor the target. Nothing downstream could see it: extraction
+  excludes the first line's indent, so the landed symbol still compared equal and
+  resume called the step done.
+- **An append at the end of a symbol lands.** The proof ratified a blank right
+  context by position (`p === symText.length`), and a symbol whose bytes end in a
+  newline puts the point one byte short of that. Every markdown section and every
+  function whose extraction keeps its trailing line was refused. It is tail
+  equality now, which still pins the point exactly.
+- **A blank line under an insert is layout, not an absent tail.** The right
+  context stopped at the next line, so an insert above a blank line baked a blank
+  side that could only ratify positionally, and then collided. It keeps taking
+  whole lines while the context is still whitespace, to a fail-loud cap of 64.
+- **A guide saved with CRLF parses.** JS `.` never matches `\r`, so a guide
+  checked out on Windows matched no heading, no field and no fence. It did not
+  parse at all.
+- **A fence closes on a run at least as long as the one that opened it.** A step
+  whose After is itself a markdown file ended at the ``` inside its own bytes and
+  replayed a truncated section. `splitSections` is fence-aware too, which was the
+  bigger half: a `#` heading inside a fence tore the step apart before
+  `parseFields` ever saw it. An unclosed fence throws rather than swallowing
+  every step below it.
+- **A symbol name that answers for more than one item says so.** Two `run`
+  methods in different impls, a C# overload pair, a `### Fixed` heading per
+  release: `findItemByName` takes the first in document order, which is a coin
+  flip between real candidates, and the wrong pick is invisible in the buffer
+  afterwards. The runner warns before it replays and the validator warns at
+  authoring time. Neither picks for you.
+- **The tree diff stopped allocating a substring per DP cell.** The LCS that
+  anchors two symbol trees sliced each node's text inside the loop, m*n times. A
+  2000-statement symbol took 2.1 seconds to diff a one-line change, which the
+  human meets as the editor freezing when the step opens. Sliced once, the same
+  symbol diffs in tens of milliseconds.
+
+The new oracles are named for what they prove rather than what they call:
+`replay-matrix` crosses eight language specs with seven byte shapes and nine
+edit shapes, `divergence-matrix` types into the buffer mid-symbol and demands
+either the merge or a collision, `blind-insert-contract` was written from the
+contract without reading the implementation, and `field-defects` replays the
+recorded bytes of each incident above.
+
 ## 2.0.0
 
 Nothing slowed Tab down. A phase ran at keyboard-repeat speed and the

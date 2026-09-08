@@ -1,0 +1,51 @@
+import React, { useMemo, useState } from "react";
+
+export interface ReadingRowProps {
+  label: string;
+  value: number;
+  onPick: (label: string) => void;
+}
+
+/** One row of the readings table. */
+export function ReadingRow({ label, value, onPick }: ReadingRowProps): JSX.Element {
+  const tone = value < 0 ? "negative" : "positive";
+  return (
+    <tr className={tone} onClick={() => onPick(label)}>
+      <td>{label}</td>
+      <td>{value}</td>
+    </tr>
+  );
+}
+
+/**
+ * The readings table. Totals are memoised because the parent re-renders on
+ * every tick of the live feed.
+ */
+export function ReadingsTable({ rows }: { rows: ReadingRowProps[] }): JSX.Element {
+  const [picked, setPicked] = useState<string | undefined>(undefined);
+  const total = useMemo(() => {
+    let sum = 0;
+    for (const row of rows) {
+      if (row.value > 0) {
+        sum += row.value;
+      }
+    }
+    return sum;
+  }, [rows]);
+
+  return (
+    <table>
+      <tbody>
+        {rows.map((row) => (
+          <ReadingRow key={row.label} {...row} onPick={setPicked} />
+        ))}
+      </tbody>
+      <tfoot>
+        <tr>
+          <td>total</td>
+          <td>{total}</td>
+        </tr>
+      </tfoot>
+    </table>
+  );
+}

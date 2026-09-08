@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Readings</title>
+  <link rel="stylesheet" href="./readings.css">
+</head>
+<body>
+  <!-- the masthead carries the live indicator -->
+  <header id="masthead" class="top">
+    <h1>Readings</h1>
+    <span id="live-dot" class="dot"></span>
+  </header>
+
+  <main id="content">
+    <section id="summary">
+      <p>The accumulator reports a bounded total.</p>
+      <img src="./chart.png" alt="rolling window">
+    </section>
+
+    <table id="readings-table" class="readings">
+      <thead>
+        <tr>
+          <th>Label</th>
+          <th>Value</th>
+        </tr>
+      </thead>
+      <tbody id="readings-body">
+        <tr>
+          <td>series-0</td>
+          <td>8</td>
+        </tr>
+      </tbody>
+    </table>
+  </main>
+
+  <footer id="colophon">
+    <p>Built from the feed.</p>
+  </footer>
+</body>
+</html>

@@ -12,7 +12,7 @@
 // target, the plan is `blocked` — surfaced to the human, never guessed.
 
 import { LanguageSpec } from "./language";
-import { SyntaxNode, leadingTriviaStart, namedChildren } from "./walk";
+import { SyntaxNode, namedChildren } from "./walk";
 import { parseRoot } from "./diff";
 
 // The file's line ending — scaffolds and separators must match it, or a CRLF
@@ -72,6 +72,20 @@ function colOf(src: string, i: number): number {
   let c = 0;
   for (let k = i - 1; k >= 0 && src[k] !== "\n"; k--) c++;
   return c;
+}
+
+// The REAL whitespace bytes standing between the start of `i`'s line and `i`.
+// The scaffold indents with these rather than with `" ".repeat(colOf(...))`: a
+// target indented with tabs got a space per tab, which is a byte that exists in
+// neither the sandbox nor the target (ground truth), and nothing downstream
+// could see it — extraction excludes the first line's indent, so the landed
+// symbol still compared equal and resume called the step done. Empty when the
+// line carries code before `i`; the caller falls back to a synthesized column
+// there, because there is no honest prefix to copy.
+function linePrefix(src: string, i: number): string {
+  const start = src.lastIndexOf("\n", i - 1) + 1;
+  const prefix = src.slice(start, i);
+  return /^[ \t]*$/.test(prefix) ? prefix : "";
 }
 
 // Offset of the end of the line containing `i` — before its `\r\n`/`\n`, or text end.
@@ -225,12 +239,12 @@ export function planCreateInsertion(
   if (!atRoot) anchor ??= targetKids[targetKids.length - 1]; // no named predecessor: land last
   if (atRoot && !anchor) return { kind: "top-level" }; // root fallback stays end-of-file
 
-  // A symbol with leading trivia (doc comments, attributes) extracts from its
-  // LINE START, so its bytes carry their own first-line indentation — the
-  // scaffold must not add a pad on top of it (the cursor parks at column 0 and
-  // the symbol supplies its own column).
-  const holder = itemIdx >= 0 ? sibs[itemIdx] : item;
-  const ownPad = leadingTriviaStart(sandboxText, holder.startIndex, spec) !== holder.startIndex;
+  // The scaffold always supplies the column. A symbol's bytes never carry their
+  // own first-line indent (leadingTriviaStart starts at the first visible byte
+  // whether or not the item has trivia above it), and the honest source for the
+  // column is the TARGET's own layout — the anchor sibling's column here, the
+  // container's indent width below — not the depth the sandbox happened to
+  // nest it at.
 
   const eol = eolOf(targetText);
   const braced = !atRoot && targetText[body.endIndex - 1] === "}";
@@ -245,8 +259,11 @@ export function planCreateInsertion(
     if (braced && at >= body.endIndex) {
       return { kind: "blocked", reason: `container \`${header}\` is single-line — no landing line for the new symbol` };
     }
+    // The anchor sibling's own leading whitespace, byte for byte — tabs stay
+    // tabs. `indent` stays a column count for the walk's layout arithmetic.
+    const pad = linePrefix(targetText, anchor.startIndex) || " ".repeat(colOf(targetText, anchor.startIndex));
     const indent = colOf(targetText, anchor.startIndex);
-    const scaffold = `${eol}${eol}${ownPad ? "" : " ".repeat(indent)}`;
+    const scaffold = `${eol}${eol}${pad}`;
     return { kind: "container", start: at, end: at, scaffold, cursorAt: at + scaffold.length, indent, container: label };
   }
 
@@ -256,8 +273,12 @@ export function planCreateInsertion(
   const childIndent = colOf(targetText, target!.node.startIndex) + spec.indentWidth;
   const closeIndent = colOf(targetText, target!.node.startIndex);
   const open = body.startIndex + 1;
-  const cursorPad = ownPad ? "" : " ".repeat(childIndent);
-  const scaffold = `${eol}${cursorPad}${eol}${" ".repeat(closeIndent)}`;
+  // An empty body has no sibling to copy a prefix from, so the container's own
+  // prefix is the honest source: one more level of whatever it indents with.
+  const containerPad = linePrefix(targetText, target!.node.startIndex);
+  const unit = containerPad.includes("\t") ? "\t" : " ".repeat(spec.indentWidth);
+  const cursorPad = containerPad ? containerPad + unit : " ".repeat(childIndent);
+  const scaffold = `${eol}${cursorPad}${eol}${containerPad || " ".repeat(closeIndent)}`;
   return {
     kind: "container",
     start: open,

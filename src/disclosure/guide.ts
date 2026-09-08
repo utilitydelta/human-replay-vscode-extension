@@ -63,7 +63,7 @@ export interface ReplayGuide {
 
 const FIELD = /^\*\*([^*]+):\*\*\s?(.*)$/; // **Label:** value
 const HEADING = /^(#{1,6})\s+(.*)$/;
-const FENCE = /^```/;
+const FENCE = /^(`{3,})/; // the run length: a ```` block closes on ````, not on the ``` inside it
 const STEP_HEADING = /^Step\s+([\d.]+):\s*(.*)$/i;
 const INVARIANT_BULLET = /^[-*]\s+\*\*([^*]+?):?\*\*\s*:?\s*(.*)$/; // - **Rule:** reason
 const QUOTE = /^\s*>\s?(.*?)\s*$/; // a blockquote line, body captured (CRLF safe)
@@ -80,7 +80,7 @@ interface FieldBag {
   after?: string;
 }
 
-function parseFields(lines: string[]): FieldBag {
+function parseFields(lines: string[], eol: string): FieldBag {
   const fields = new Map<string, string>();
   let before: string | undefined;
   let after: string | undefined;
@@ -90,12 +90,21 @@ function parseFields(lines: string[]): FieldBag {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
 
-    if (FENCE.test(line)) {
+    const open = FENCE.exec(line);
+    if (open) {
       // Capture verbatim to the closing fence — ground truth, no normalization.
+      // The close must be at least as long as the open, so a ```` block that
+      // wraps a ``` one (a step whose After is itself a markdown file with a
+      // code block) captures the inner fence as content instead of ending on it.
+      const ticks = open[1].length;
       const body: string[] = [];
       i++;
-      while (i < lines.length && !FENCE.test(lines[i])) body.push(lines[i++]);
-      const code = body.join("\n");
+      for (; i < lines.length; i++) {
+        const close = FENCE.exec(lines[i]);
+        if (close && close[1].length >= ticks) break;
+        body.push(lines[i]);
+      }
+      const code = body.join(eol);
       if (codeTarget === "before") before = code;
       else if (codeTarget === "after") after = code;
       lastLabel = null;
@@ -270,8 +279,23 @@ interface Section {
 function splitSections(md: string): Section[] {
   const sections: Section[] = [];
   let current: Section | null = null;
-  md.split("\n").forEach((line, i) => {
-    const h = HEADING.exec(line);
+  // Split on either terminator and carry no carriage returns into the line
+  // regexes: JS `.` never matches \r, so a guide saved with CRLF matched no
+  // heading, no field and no fence — it did not parse at all.
+  //
+  // Fences are opaque here. A step's Before/After can be a markdown file, and
+  // its `# Heading` lines are BYTES, not structure: reading them as headings
+  // ended the step at its own fence and truncated the bytes it was carrying.
+  let fence = 0; // backtick run length of the open fence, 0 when outside one
+  md.split(/\r?\n/).forEach((line, i) => {
+    const ticks = FENCE.exec(line);
+    if (ticks) {
+      if (fence === 0) fence = ticks[1].length;
+      else if (ticks[1].length >= fence) fence = 0;
+      if (current) current.body.push(line);
+      return;
+    }
+    const h = fence === 0 ? HEADING.exec(line) : null;
     if (h) {
       current = { level: h[1].length, title: h[2].trim(), line: i + 1, body: [] };
       sections.push(current);
@@ -279,6 +303,10 @@ function splitSections(md: string): Section[] {
       current.body.push(line);
     }
   });
+  // An unclosed fence swallows every heading below it, so the steps after it
+  // would simply not exist — the human replays half a feature and never learns
+  // the other half was there. The guide is canonical: say so and stop.
+  if (fence > 0) throw new Error("replay guide: unclosed code fence — every step below it would be swallowed");
   return sections;
 }
 
@@ -289,6 +317,9 @@ function splitSections(md: string): Section[] {
  * the guide is canonical, so a defect is loud, not silently tolerated.
  */
 export function parseGuide(md: string): ReplayGuide {
+  // The guide's own line terminator, so a fenced block reconstructs with the
+  // bytes the guide carries rather than being normalized to LF.
+  const eol = md.includes("\r\n") ? "\r\n" : "\n";
   const sections = splitSections(md);
 
   const titleSection = sections.find((s) => s.level === 1 && /^Replay:/i.test(s.title));
@@ -309,7 +340,7 @@ export function parseGuide(md: string): ReplayGuide {
     if (!sm) continue;
     const id = sm[1];
     const title = sm[2].trim();
-    const bag = parseFields(s.body);
+    const bag = parseFields(s.body, eol);
 
     const action = parseAction(bag.fields.get("action"));
     const file = (bag.fields.get("file") ?? "").replace(/`/g, "").trim();
