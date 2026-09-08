@@ -653,6 +653,6 @@ test("ambiguity is countable — an unambiguous name counts once, an absent one 
 // exercised is how a matrix rots. Anything here is a gap the human can read.
 test("matrix coverage: every skipped cell names why it was skipped", () => {
   for (const line of skipped) assert.match(line, /: .+/, "a skip must carry its reason");
-  // Recorded for the session's gap report.
-  fs.writeFileSync(path.join(__dirname, "..", "session-v2", "matrix-skips.txt"), `${skipped.sort().join("\n")}\n`);
+  // The list itself is the report: node --test prints it on demand.
+  if (process.env.MATRIX_SKIPS) console.log(skipped.sort().join("\n"));
 });
