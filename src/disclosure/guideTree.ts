@@ -22,7 +22,9 @@ export type Node =
   | { kind: "step"; index: number }
   | { kind: "why"; index: number }
   | { kind: "question"; index: number }
-  | { kind: "invariant"; index: number; at: number };
+  | { kind: "invariant"; index: number; at: number }
+  | { kind: "checkpoint"; phase: string }
+  | { kind: "task"; phase: string; at: number };
 
 const ICON: Record<StepStatus, () => vscode.ThemeIcon> = {
   done: () => new vscode.ThemeIcon("pass", new vscode.ThemeColor("charts.green")),
@@ -59,8 +61,18 @@ export class GuideTreeProvider implements vscode.TreeDataProvider<Node> {
       });
       return groups.map((g) => ({ kind: "phase", label: g.label, steps: g.steps }));
     }
-    if (element.kind === "phase") return element.steps.map((index) => ({ kind: "step", index }));
+    if (element.kind === "phase") {
+      const children: Node[] = element.steps.map((index) => ({ kind: "step", index }));
+      // The checkpoint closes the phase, so it sits last — where the replay
+      // stops. A phase that wrote none simply has no node.
+      if (this.runner.checkpointFor(element.label)) children.push({ kind: "checkpoint", phase: element.label });
+      return children;
+    }
     if (element.kind === "step") return this.stepChildren(element.index);
+    if (element.kind === "checkpoint") {
+      const tasks = this.runner.checkpointFor(element.phase)?.tasks ?? [];
+      return tasks.map((_, at) => ({ kind: "task", phase: element.phase, at }));
+    }
     return [];
   }
 
@@ -82,15 +94,66 @@ export class GuideTreeProvider implements vscode.TreeDataProvider<Node> {
    *  and the gate both reveal a step node the human never expanded. */
   getParent(node: Node): Node | undefined {
     if (node.kind === "phase") return undefined;
-    if (node.kind === "step") {
-      const label = this.runner.steps[node.index]?.phase ?? "Steps";
-      const steps: number[] = [];
-      this.runner.steps.forEach((s, i) => {
-        if ((s.phase ?? "Steps") === label) steps.push(i);
-      });
-      return { kind: "phase", label, steps };
-    }
+    if (node.kind === "checkpoint") return this.phaseNode(node.phase);
+    if (node.kind === "task") return { kind: "checkpoint", phase: node.phase };
+    if (node.kind === "step") return this.phaseNode(this.runner.steps[node.index]?.phase ?? "Steps");
     return { kind: "step", index: node.index };
+  }
+
+  private phaseNode(label: string): Node {
+    const steps: number[] = [];
+    this.runner.steps.forEach((s, i) => {
+      if ((s.phase ?? "Steps") === label) steps.push(i);
+    });
+    return { kind: "phase", label, steps };
+  }
+
+  /** The phase's closing checkpoint, and one node per task under it. The tasks
+   *  are the human's to run — a tests-before-fix phase asks them to watch the
+   *  tests fail and step through them here, in the files they just typed, with
+   *  their own runner and debugger. The extension shows the task and gets out
+   *  of the way; a test the tool ran for you taught you nothing. Clicking
+   *  either node opens the guide at the checkpoint, which is where the
+   *  questions (and the answers the panel deliberately withholds) are written.
+   */
+  private checkpointItem(node: Extract<Node, { kind: "checkpoint" | "task" }>): vscode.TreeItem {
+    const check = this.runner.checkpointFor(node.phase);
+    const tasks = check?.tasks ?? [];
+    const open: vscode.Command | undefined = check
+      ? { command: "humanReplay.guide.openCheckpoint", title: "Open the checkpoint in the guide", arguments: [check.line] }
+      : undefined;
+    if (node.kind === "task") {
+      const text = tasks[node.at] ?? "";
+      const item = new vscode.TreeItem(oneLine(text), vscode.TreeItemCollapsibleState.None);
+      item.id = `task:${node.phase}:${node.at}`;
+      item.iconPath = new vscode.ThemeIcon("circle-outline");
+      item.tooltip = new vscode.MarkdownString(text);
+      item.contextValue = "guideTask";
+      if (open) item.command = open;
+      return item;
+    }
+    // Waiting is the state worth colouring: the replay has stopped on this
+    // boundary, and the phase behind the door is the one that turns these green.
+    const waiting = this.runner.pausedCheckpoint?.phase === node.phase;
+    const item = new vscode.TreeItem(
+      "Checkpoint",
+      tasks.length === 0
+        ? vscode.TreeItemCollapsibleState.None
+        : waiting
+          ? vscode.TreeItemCollapsibleState.Expanded
+          : vscode.TreeItemCollapsibleState.Collapsed,
+    );
+    item.id = `checkpoint:${node.phase}`;
+    item.iconPath = new vscode.ThemeIcon("checklist", waiting ? new vscode.ThemeColor("charts.yellow") : undefined);
+    item.description = waiting ? "run these yourself before the next phase" : tasks.length === 1 ? "1 check" : `${tasks.length} checks`;
+    item.tooltip = new vscode.MarkdownString(
+      tasks.length === 0
+        ? "**Checkpoint**\n\nNo checklist items — open the guide to read it."
+        : `**Checkpoint**\n\n${tasks.map((t) => `- ${t}`).join("\n")}`,
+    );
+    item.contextValue = "guideCheckpoint";
+    if (open) item.command = open;
+    return item;
   }
 
   getTreeItem(node: Node): vscode.TreeItem {
@@ -100,6 +163,7 @@ export class GuideTreeProvider implements vscode.TreeDataProvider<Node> {
       item.contextValue = "guidePhase";
       return item;
     }
+    if (node.kind === "checkpoint" || node.kind === "task") return this.checkpointItem(node);
     const step = this.runner.steps[node.index];
     if (node.kind === "step") {
       const status = this.runner.status(node.index);

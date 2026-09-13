@@ -245,8 +245,13 @@ export function activate(context: vscode.ExtensionContext) {
     const paused = guideRunner.pausedPhase;
     if (paused && !done) {
       const short = paused.split(":")[0].trim();
-      guideStatus.text = `$(debug-continue) ${short} ready — click to continue`;
-      guideStatus.tooltip = `The replay is paused between phases. Click here (or a step in the Replay Guide panel) to start ${paused}.`;
+      const check = guideRunner.pausedCheckpoint;
+      const pending = check?.tasks.length ?? 0;
+      guideStatus.text = pending > 0 ? `$(checklist) checkpoint: ${pending} to run — then ${short}` : `$(debug-continue) ${short} ready — click to continue`;
+      guideStatus.tooltip =
+        pending > 0
+          ? `The phase closed on a checkpoint. Run its checks yourself (the Replay Guide panel lists them) — on a tests-first phase they are meant to FAIL here. Click when you are ready to start ${paused}.`
+          : `The replay is paused between phases. Click here (or a step in the Replay Guide panel) to start ${paused}.`;
       guideStatus.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
       guideStatus.show();
       return;
@@ -463,6 +468,14 @@ export function activate(context: vscode.ExtensionContext) {
     }),
     vscode.commands.registerCommand("humanReplay.guide.skipStepAt", (node?: { index: number }) => {
       if (node) guideRunner.skip(node.index);
+    }),
+    // The checkpoint's panel nodes carry the tasks; the guide carries the rest
+    // of the block. Opening it is a read, never a run — the human drives their
+    // own test runner from the files they just landed.
+    vscode.commands.registerCommand("humanReplay.guide.openCheckpoint", (line?: number) => {
+      if (!currentGuideUri || line === undefined) return;
+      const at = new vscode.Position(Math.max(0, line - 1), 0);
+      void vscode.window.showTextDocument(currentGuideUri, { preview: false, selection: new vscode.Range(at, at) });
     }),
   );
 

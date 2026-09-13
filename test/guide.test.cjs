@@ -444,3 +444,93 @@ test("step.line locates the heading in the shipped guide", () => {
     assert.strictEqual(s.line, idx + 1, `step ${s.id} heading line`);
   }
 });
+
+// --- Phase checkpoints ---------------------------------------------------
+//
+// The replay already stops at every phase boundary; the checkpoint is what the
+// stop SAYS. On a tests-before-fix phase it carries the red assertion — the
+// command the human runs themselves and the failures they must see before the
+// next phase turns them green. Only the `- [ ]` tasks are carried: the other
+// bullets are questions whose answers sit one blockquote below, and a panel
+// that renders those hands over the answer before the human has thought.
+
+const CHECKED = `# Replay: t
+
+## System Invariants
+
+- **Inv A:** reason a.
+
+## Phase 1: Reproduction tests
+
+### Step 1.1: wal_replay_drops_tail
+
+**File:** \`src/wal.rs\`
+**Action:** Create
+**Symbol:** \`wal_replay_drops_tail\`
+**Why:** the defect needs a witness before it has a fix.
+
+**Retrospective:** none
+
+### CHECKPOINT: Phase 1 complete
+
+**Understanding check:**
+
+- What does the tail record prove that a length check does not?
+  > **Answer:** that the writer acked bytes the reader cannot see.
+
+- [ ] Run \`cargo test wal_replay_drops_tail\`. Expect 1 failure: the replay
+      stops one record short. Green here means the test is not reproducing
+      the defect.
+- [ ] Step through \`WalReader::next\` and watch the tail offset.
+
+**Divergence notes:** _______________
+
+## Phase 2: The fix
+
+### Step 2.1: next
+
+**File:** \`src/wal.rs\`
+**Action:** Modify
+**Symbol:** \`next\`
+**Why:** the tail offset was computed before the record was validated.
+
+**Retrospective:** none
+`;
+
+test("a phase checkpoint parses its `- [ ]` tasks, keyed to the phase it closes", () => {
+  const g = parseGuide(CHECKED);
+  assert.strictEqual(g.checkpoints.length, 1);
+  const [cp] = g.checkpoints;
+  assert.strictEqual(cp.phase, "Phase 1: Reproduction tests");
+  assert.deepStrictEqual(cp.tasks, [
+    "Run `cargo test wal_replay_drops_tail`. Expect 1 failure: the replay stops one record short. Green here means the test is not reproducing the defect.",
+    "Step through `WalReader::next` and watch the tail offset.",
+  ]);
+});
+
+test("the checkpoint withholds the retrospective answers the guide writes beside them", () => {
+  const [cp] = parseGuide(CHECKED).checkpoints;
+  const joined = cp.tasks.join("\n");
+  assert.ok(!/Answer/.test(joined), "no answer key leaks into the tasks");
+  assert.ok(!/Understanding check/.test(joined), "no section label leaks into the tasks");
+});
+
+test("checkpoint.line opens the guide at the CHECKPOINT heading", () => {
+  const [cp] = parseGuide(CHECKED).checkpoints;
+  const at = CHECKED.split("\n")[cp.line - 1];
+  assert.ok(at.startsWith("### CHECKPOINT:"), `line ${cp.line} is the heading, got: ${at}`);
+});
+
+test("a checkpoint never swallows the steps of the phase below it", () => {
+  const g = parseGuide(CHECKED);
+  assert.deepStrictEqual(
+    g.steps.map((s) => s.id),
+    ["1.1", "2.1"],
+  );
+  assert.strictEqual(g.steps[1].phase, "Phase 2: The fix");
+});
+
+test("a guide with no checkpoints parses with an empty list, not a throw", () => {
+  assert.deepStrictEqual(parseGuide(PHASED(RETRO_STEP())).checkpoints, []);
+  assert.deepStrictEqual(parseGuide(SHIPPED).checkpoints, []);
+});

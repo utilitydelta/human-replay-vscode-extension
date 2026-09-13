@@ -52,6 +52,25 @@ export interface ReplayStep {
   line: number;
 }
 
+// A phase's closing `### CHECKPOINT: ...` block. The replay already stops at
+// every phase boundary; until this, the stop said nothing but "review what
+// landed". The guide author wrote the actionable part here — most sharply for a
+// tests-before-fix phase, whose checkpoint names the command and the failures
+// the human must SEE before the fix turns them green.
+//
+// Only the `- [ ]` task lines are carried. The checkpoint's other bullets are
+// questions with their answers inline one blockquote below, and surfacing those
+// in a panel hands over the answer before the human has thought about it. Those
+// stay in the markdown, which the human opens from the node.
+export interface PhaseCheckpoint {
+  /** The `## Phase N: ...` heading this checkpoint closes. */
+  phase: string;
+  /** 1-based line of the `### CHECKPOINT:` heading, for opening the guide here. */
+  line: number;
+  /** The block's `- [ ]` items, in order, marker stripped and wrapping joined. */
+  tasks: string[];
+}
+
 export interface ReplayGuide {
   /** The feature slug from `# Replay: {slug}`. */
   feature: string;
@@ -59,6 +78,9 @@ export interface ReplayGuide {
   invariants: Invariant[];
   /** Steps in replay (dependency) order — the program counter walks these. */
   steps: ReplayStep[];
+  /** Phase checkpoints, keyed by the phase heading they close. Empty when the
+   *  guide writes none — a checkpoint is optional, a step is not. */
+  checkpoints: PhaseCheckpoint[];
 }
 
 const FIELD = /^\*\*([^*]+):\*\*\s?(.*)$/; // **Label:** value
@@ -68,6 +90,8 @@ const STEP_HEADING = /^Step\s+([\d.]+):\s*(.*)$/i;
 const INVARIANT_BULLET = /^[-*]\s+\*\*([^*]+?):?\*\*\s*:?\s*(.*)$/; // - **Rule:** reason
 const QUOTE = /^\s*>\s?(.*?)\s*$/; // a blockquote line, body captured (CRLF safe)
 const CHOICE = /^\*\*(Answer|Distractor):\*\*\s*(.*)$/i; // inside the blockquote
+const CHECKPOINT_HEADING = /^CHECKPOINT\b:?\s*(.*)$/i;
+const TASK = /^[-*]\s+\[[ xX]\]\s+(.*)$/; // - [ ] run this yourself
 
 // Parse `**Label:**`-prefixed lines into a field bag. A value runs from after its
 // colon across continuation lines until the next field, heading, fence, or blank
@@ -310,6 +334,32 @@ function splitSections(md: string): Section[] {
   return sections;
 }
 
+/** The `- [ ]` lines of a checkpoint block, wrapping joined. A task runs from its
+ *  marker until the next bullet, a blank line, or a `**Label:**` — guides wrap
+ *  prose the same way everywhere, so this is the field bag's rule again. */
+function parseTasks(body: string[]): string[] {
+  const tasks: string[] = [];
+  let open: string[] = [];
+  const close = () => {
+    if (open.length > 0) tasks.push(open.join(" ").replace(/\s+/g, " ").trim());
+    open = [];
+  };
+  for (const raw of body) {
+    const line = raw.trim();
+    const t = TASK.exec(line);
+    if (t) {
+      close();
+      open = [t[1]];
+      continue;
+    }
+    if (open.length === 0) continue;
+    if (line === "" || FIELD.test(line) || /^[-*]\s/.test(line)) close();
+    else open.push(line);
+  }
+  close();
+  return tasks;
+}
+
 /**
  * Parse a canonical replay guide into the ordered steps the engine replays.
  * Throws on a malformed guide (missing feature, dangling invariant reference,
@@ -330,10 +380,18 @@ export function parseGuide(md: string): ReplayGuide {
   const invMap = invSection ? parseInvariants(invSection.body) : new Map<string, Invariant>();
 
   const steps: ReplayStep[] = [];
+  const checkpoints: PhaseCheckpoint[] = [];
   let currentPhase: string | undefined;
   for (const s of sections) {
     if (s.level === 2 && /^Phase\b/i.test(s.title)) {
       currentPhase = s.title;
+      continue;
+    }
+    if (CHECKPOINT_HEADING.test(s.title)) {
+      // Keyed by phase, not by position: the runner looks it up when that
+      // phase's last step resolves. "Steps" matches the tree's fallback for a
+      // guide that never declares a phase.
+      checkpoints.push({ phase: currentPhase ?? "Steps", line: s.line, tasks: parseTasks(s.body) });
       continue;
     }
     const sm = STEP_HEADING.exec(s.title);
@@ -405,5 +463,5 @@ export function parseGuide(md: string): ReplayGuide {
   }
 
   if (steps.length === 0) throw new Error("replay guide: no `### Step N.M:` steps found");
-  return { feature, invariants: [...invMap.values()], steps };
+  return { feature, invariants: [...invMap.values()], steps, checkpoints };
 }

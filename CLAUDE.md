@@ -67,8 +67,9 @@ A change that violates one of these is drift, not a feature.
   both sides or the step collides). Patch steps
   (line-grain, below symbol grain): `lineDiff.ts`. File walk (create-file
   discloses by blank-line groups): `fileWalk.ts`. Guide:
-  `guide.ts` (parser), `guideRunner.ts` (program counter + routing + resume +
-  phase-boundary pause), `resume.ts`, `programCounter.ts`, `guideTree.ts`.
+  `guide.ts` (parser, steps + phase checkpoints), `guideRunner.ts` (program
+  counter + routing + resume + phase-boundary pause and the checkpoint it
+  surfaces there), `resume.ts`, `programCounter.ts`, `guideTree.ts`.
 - `src/` — the extension entry (`extension.ts`) and `ghostProvider.ts`, the
   inline-completion surface both engines render their ghosts through.
 - `test/*.test.cjs` — headless oracles, parameterized over corpora, each naming

@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
-import { ReplayGuide, ReplayStep, parseGuide } from "./guide";
+import { PhaseCheckpoint, ReplayGuide, ReplayStep, parseGuide } from "./guide";
 import { DisclosureController } from "./controller";
 import { ReplayOrchestrator } from "./orchestrator";
 import { parseRoot } from "./diff";
@@ -57,6 +57,12 @@ export class GuideRunner {
   // The status bar renders it as a persistent "click to continue" so the pause
   // survives the toast (which auto-dismisses while the human reviews).
   private pausedBefore: string | undefined;
+  // The checkpoint of the phase that just closed, while that pause stands. A
+  // tests-before-fix phase leaves its red assertion here: the human runs and
+  // debugs those tests with their own IDE before the next phase makes them
+  // pass. The runner never runs anything — it holds the door and says what is
+  // waiting behind it.
+  private pausedCheck: PhaseCheckpoint | undefined;
   // Set while the replay waits before an auto-run Patch step. A whole-file
   // reconcile strikes live bytes — often the human's own mid-replay edits — so
   // momentum never arms one; it pops in as this pause instead, and an explicit
@@ -527,16 +533,29 @@ export class GuideRunner {
     const to = this.guide?.steps[next];
     if (from && to && from.phase !== to.phase) {
       const done = from.phase ?? "steps";
+      const check = this.checkpointFor(from.phase);
       this.output.appendLine(`[guide] ${done} complete — paused before ${to.phase ?? "the next steps"}`);
+      if (check) this.output.appendLine(`[guide] checkpoint: ${check.tasks.length} task(s) before the next phase`);
       // The pause needs surfaces that OUTLIVE a toast: the status bar flips to
       // a persistent "click to continue" (via pausedPhase + changed), and the
       // Replay Guide panel reveals itself — it is the control surface for the
       // stop. The toast stays as the immediate narration.
       this.pausedBefore = to.phase ?? "the next steps";
+      this.pausedCheck = check;
       this.changed();
       void vscode.commands.executeCommand("humanReplay.guideSteps.focus");
+      // The checkpoint's first task is the one worth putting in the toast — in a
+      // test phase it is the red assertion, and reading it is what sends the
+      // human to their own test runner and debugger. The rest of the block is a
+      // click away in the panel, so nothing is truncated into uselessness here.
+      const head = check?.tasks[0];
       void vscode.window
-        .showInformationMessage(`Human Replay: ${done} complete. Review what landed, then continue when ready.`, "Continue replay")
+        .showInformationMessage(
+          head
+            ? `Human Replay: ${done} complete. ${head}`
+            : `Human Replay: ${done} complete. Review what landed, then continue when ready.`,
+          "Continue replay",
+        )
         .then((choice) => {
           if (choice !== "Continue replay") return;
           const at = this.pc.next();
@@ -625,6 +644,19 @@ export class GuideRunner {
     return this.pausedBefore;
   }
 
+  /** The closing checkpoint of the phase the replay is paused after, when that
+   *  phase wrote one. */
+  get pausedCheckpoint(): PhaseCheckpoint | undefined {
+    return this.pausedCheck;
+  }
+
+  /** A phase's closing checkpoint, by the phase heading. The tree asks for
+   *  every phase; the pause asks for the one that just closed. */
+  checkpointFor(phase: string | undefined): PhaseCheckpoint | undefined {
+    const label = phase ?? "Steps";
+    return this.guide?.checkpoints.find((c) => c.phase === label);
+  }
+
   /** What the pending Patch step would strike, while the replay waits for the
    *  human to enter it. */
   get pausedPatchInfo(): { rel: string; detail: string } | undefined {
@@ -641,6 +673,7 @@ export class GuideRunner {
     this.pc.reset(this.steps.length);
     for (const i of skipped) this.pc.skip(i);
     this.pausedBefore = undefined;
+    this.pausedCheck = undefined;
     this.pausedPatch = undefined;
     this.clearGate("resynced from files");
     const landed = this.deriveLanded(workspaceRoot);
@@ -656,6 +689,7 @@ export class GuideRunner {
     this.fileWalk = undefined;
     this.clearGate("replay session ended");
     this.pausedBefore = undefined;
+    this.pausedCheck = undefined;
     this.pausedPatch = undefined;
     this.guide = undefined;
     this.sessionSandboxRoot = undefined;
@@ -1265,6 +1299,7 @@ export class GuideRunner {
     }
     if (this.pausedBefore !== undefined) {
       this.pausedBefore = undefined; // any run is the continue gesture
+      this.pausedCheck = undefined;
       this.changed();
     }
     if (this.pausedPatch !== undefined) {
