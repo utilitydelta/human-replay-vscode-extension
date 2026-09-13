@@ -524,8 +524,22 @@ export class GuideRunner {
     const next = this.pc.next();
     if (next >= this.steps.length) {
       if (this.pc.isComplete) {
+        // The last phase has no boundary after it, so its checkpoint has no
+        // pause to ride. It is also where the claimed-safe checks live, which
+        // makes silence here the worst place for it: the human reads "complete"
+        // and closes the panel with the bench unrun.
+        const last = this.guide?.steps[this.steps.length - 1];
+        const check = this.checkpointFor(last?.phase);
+        const head = check?.tasks[0];
+        this.pausedCheck = head ? check : undefined;
         this.output.appendLine(`[guide] guide "${this.feature}" complete`);
-        void vscode.window.showInformationMessage(`Human Replay: guide "${this.feature}" complete — every step done or skipped.`);
+        if (check) this.output.appendLine(`[guide] closing checkpoint: ${check.tasks.length} task(s) still yours to run`);
+        this.changed();
+        void vscode.window.showInformationMessage(
+          head
+            ? `Human Replay: guide "${this.feature}" complete. ${check.tasks.length} closing check(s) are still yours to run. ${head}`
+            : `Human Replay: guide "${this.feature}" complete — every step done or skipped.`,
+        );
       }
       return;
     }
@@ -1297,9 +1311,9 @@ export class GuideRunner {
       vscode.window.showWarningMessage("Human Replay: no such step in the loaded guide.");
       return;
     }
-    if (this.pausedBefore !== undefined) {
+    if (this.pausedBefore !== undefined || this.pausedCheck !== undefined) {
       this.pausedBefore = undefined; // any run is the continue gesture
-      this.pausedCheck = undefined;
+      this.pausedCheck = undefined; // including a run after the closing checkpoint, which has no pausedBefore
       this.changed();
     }
     if (this.pausedPatch !== undefined) {

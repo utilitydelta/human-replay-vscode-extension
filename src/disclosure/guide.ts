@@ -91,7 +91,10 @@ const INVARIANT_BULLET = /^[-*]\s+\*\*([^*]+?):?\*\*\s*:?\s*(.*)$/; // - **Rule:
 const QUOTE = /^\s*>\s?(.*?)\s*$/; // a blockquote line, body captured (CRLF safe)
 const CHOICE = /^\*\*(Answer|Distractor):\*\*\s*(.*)$/i; // inside the blockquote
 const CHECKPOINT_HEADING = /^CHECKPOINT\b:?\s*(.*)$/i;
-const TASK = /^[-*]\s+\[[ xX]\]\s+(.*)$/; // - [ ] run this yourself
+// `- [ ]` only. A ticked `- [x]` is not carried: the panel counts what it holds
+// and calls it outstanding, so an item the human already ticked would be a
+// number that lies at them. Dropping it makes the list shrink as they work.
+const TASK = /^[-*]\s+\[ \]\s+(.*)$/; // - [ ] run this yourself
 
 // Parse `**Label:**`-prefixed lines into a field bag. A value runs from after its
 // colon across continuation lines until the next field, heading, fence, or blank
@@ -340,12 +343,26 @@ function splitSections(md: string): Section[] {
 function parseTasks(body: string[]): string[] {
   const tasks: string[] = [];
   let open: string[] = [];
+  let fence = 0; // backtick run length of the open fence, 0 when outside one
   const close = () => {
     if (open.length > 0) tasks.push(open.join(" ").replace(/\s+/g, " ").trim());
     open = [];
   };
   for (const raw of body) {
     const line = raw.trim();
+    // Fenced bytes in a checkpoint are a sample: the failure output the human
+    // should expect, or a guide-format snippet. Sample output contains lines
+    // that start `- [ ]`, and without this they were promoted to instructions
+    // the author never wrote. The fence also ends the task it sits under rather
+    // than folding its backticks into the string the toast renders.
+    const ticks = FENCE.exec(line);
+    if (ticks) {
+      if (fence === 0) fence = ticks[1].length;
+      else if (ticks[1].length >= fence) fence = 0;
+      close();
+      continue;
+    }
+    if (fence > 0) continue;
     const t = TASK.exec(line);
     if (t) {
       close();
@@ -353,7 +370,11 @@ function parseTasks(body: string[]): string[] {
       continue;
     }
     if (open.length === 0) continue;
-    if (line === "" || FIELD.test(line) || /^[-*]\s/.test(line)) close();
+    // A `>` line is the answer key the guide writes beside its questions. It
+    // ends the task and is never carried: the panel renders these strings, and
+    // an answer on a panel is an answer handed over before the human has
+    // thought about the question.
+    if (line === "" || line.startsWith(">") || FIELD.test(line) || /^[-*]\s/.test(line)) close();
     else open.push(line);
   }
   close();
@@ -391,7 +412,15 @@ export function parseGuide(md: string): ReplayGuide {
       // Keyed by phase, not by position: the runner looks it up when that
       // phase's last step resolves. "Steps" matches the tree's fallback for a
       // guide that never declares a phase.
-      checkpoints.push({ phase: currentPhase ?? "Steps", line: s.line, tasks: parseTasks(s.body) });
+      const phase = currentPhase ?? "Steps";
+      // Every consumer resolves a phase to one checkpoint, so a second one is
+      // tasks the human would never see. A `### CHECKPOINT:` under `## Closing`
+      // lands here too, because only a `## Phase` heading moves the key. The
+      // guide is canonical: say which phase, and stop.
+      if (checkpoints.some((c) => c.phase === phase)) {
+        throw new Error(`replay guide: two checkpoints under "${phase}" — the second one's tasks would never reach the human`);
+      }
+      checkpoints.push({ phase, line: s.line, tasks: parseTasks(s.body) });
       continue;
     }
     const sm = STEP_HEADING.exec(s.title);

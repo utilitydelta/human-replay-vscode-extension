@@ -250,7 +250,7 @@ export function activate(context: vscode.ExtensionContext) {
       guideStatus.text = pending > 0 ? `$(checklist) checkpoint: ${pending} to run — then ${short}` : `$(debug-continue) ${short} ready — click to continue`;
       guideStatus.tooltip =
         pending > 0
-          ? `The phase closed on a checkpoint. Run its checks yourself (the Replay Guide panel lists them) — on a tests-first phase they are meant to FAIL here. Click when you are ready to start ${paused}.`
+          ? `The phase closed on a checkpoint. Run its checks yourself; the Replay Guide panel lists them. Read what each one expects: a reproduction test is meant to fail here, a claimed-safe check is meant to pass. Click when you are ready to start ${paused}.`
           : `The replay is paused between phases. Click here (or a step in the Replay Guide panel) to start ${paused}.`;
       guideStatus.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
       guideStatus.show();
