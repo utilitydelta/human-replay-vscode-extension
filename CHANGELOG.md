@@ -1,5 +1,36 @@
 # Changelog
 
+## 2.2.0
+
+The replay stopped at every phase boundary and said "review what landed", while
+the actionable half of the phase sat unread in the guide's `### CHECKPOINT:`
+block. A tests-before-fix phase ended with you holding red tests and no prompt
+to go run them.
+
+- The checkpoint is what the pause says now. First task in the toast, all of
+  them in the Replay Guide panel under the phase they close, the status bar
+  counting them. Click one to open the guide at the block. The last phase has no
+  boundary to ride, so the completion message names its checks instead of saying
+  "complete" over an unrun bench.
+- Nothing runs on your behalf. No terminal, no test run. You are sitting in the
+  files you just typed with your own runner and your own breakpoints, and a test
+  the tool ran for you taught you nothing.
+- Only `- [ ]` lines reach the panel. The rest of the block is questions with
+  their answers one blockquote below, and an answer on a panel is the conclusion
+  handed over before you have thought about the question. A ticked `- [x]` is
+  dropped too, because the panel counts what it holds and calls it outstanding.
+- The task reader tracks fence run-length, like every other reader in the
+  parser. Without it an answer blockquote glued itself to the task, a fenced
+  sample folded its backticks in, and a `- [ ]` inside a fence became an
+  instruction nobody wrote. Two checkpoints under one phase now throw, naming
+  the phase.
+- `replay-matrix` no longer writes its skip list into a gitignored path. It
+  passed on the machine that wrote it and failed with ENOENT on every CI runner,
+  which is what stopped 2.1.0 before it packaged anything.
+
+Two new oracles, written against the guide format spec rather than the parser.
+The suite went from 1,836 tests to 1,883.
+
 ## 2.1.0
 
 Eight defects, and the suite found none of them. `scripts/harvest-replay.js`
