@@ -1,5 +1,27 @@
 # Changelog
 
+## 2.3.0
+
+A big statement could kill Tab mid-walk. The log said the step was served, the
+screen showed nothing, and every Tab after that was a nudge that re-served the
+same invisible ghost.
+
+VS Code won't draw an inline completion longer than 5000 chars. It drops the
+item without an error. The walk reveals a leaf whole, so a 106-line
+`scanner.scan(..)` closure went out as one 5765-char step and never appeared.
+
+- Steps over the limit now go out as consecutive pieces, cut at line breaks
+  and sized evenly. The incident statement lands in two Tabs. The bytes are
+  the same bytes, byte-exact.
+- Recovery still treats a split node as one node. Take over between two pieces
+  and the walk stops loud and hands you the symbol, because the rest has no
+  place in the tree to anchor to.
+- A recovery ghost over the limit isn't served, so Tab places the node
+  structurally instead of going dead.
+
+One new oracle, replaying the incident bytes. The suite went from 1,883 tests
+to 1,905.
+
 ## 2.2.0
 
 The replay stopped at every phase boundary and said "review what landed", while
