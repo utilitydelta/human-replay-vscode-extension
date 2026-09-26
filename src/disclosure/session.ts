@@ -31,6 +31,13 @@ export class DisclosureSession {
     this.index++;
   }
 
+  // Recovery lands a node whole from its first piece's bareText, so the node's
+  // continuation pieces are already in the buffer: step over them.
+  advancePastNode(): void {
+    this.index++;
+    while (this.current()?.continuation) this.index++;
+  }
+
   get done(): boolean {
     return this.index >= this.steps.length;
   }

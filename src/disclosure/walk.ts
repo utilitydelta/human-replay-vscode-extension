@@ -49,6 +49,42 @@ export interface Step {
   /** This node's text with no baked lead — a container shell or a leaf's source.
    *  What the recovery path appends when the baked offset has gone stale. */
   bareText: string;
+  /** True for the second and later pieces of a node too big for one ghost
+   *  (splitForGhost). The node's first piece carries the whole node's bareText,
+   *  so recovery lands the node from there and skips these; a continuation
+   *  has no place of its own in the tree to re-anchor to. */
+  continuation: boolean;
+}
+
+// VS Code draws no ghost for an inline completion over 5000 chars: the ghost-text
+// diff (smartDiff, src/vs/editor/contrib/inlineCompletions/browser/model/
+// computeGhostText.ts, confirmed in 1.136) returns nothing past that length, the
+// item is dropped without a trace, and Tab goes dead on a step that was served.
+export const GHOST_MAX_CHARS = 5000;
+
+// Cut `text` into consecutive pieces of at most `max` chars that concatenate
+// back to it byte-exact. Cuts land just before a newline, so every piece after
+// the first opens a line like any other walk step. The pieces are sized evenly
+// instead of greedily, so a 5.7k statement becomes two halves rather than a
+// 5000-char ghost and a stub. A single line longer than `max` gets a hard cut,
+// moved back off whitespace (a whitespace-leading ghost can't be Tab-accepted)
+// and off the middle of a surrogate pair.
+export function splitForGhost(text: string, max = GHOST_MAX_CHARS): string[] {
+  const pieces: string[] = [];
+  let rest = text;
+  while (rest.length > max) {
+    const target = Math.ceil(rest.length / Math.ceil(rest.length / max));
+    let cut = rest.lastIndexOf("\n", target);
+    if (cut <= 0) cut = rest.lastIndexOf("\n", max);
+    if (cut <= 0) {
+      cut = max;
+      while (cut > 1 && /[ \t\uDC00-\uDFFF]/.test(rest[cut])) cut--;
+    }
+    pieces.push(rest.slice(0, cut));
+    rest = rest.slice(cut);
+  }
+  pieces.push(rest);
+  return pieces;
 }
 
 // A control-flow node we descend into, with the block whose interior we open.
@@ -354,12 +390,25 @@ export function computeSteps(src: string, spec: LanguageSpec = RUST): Step[] {
   // recovery bareText carries the prefix: doc comments and attributes are the
   // symbol's bytes, and a recovery-landed first step must not drop them (the
   // prefix shares the walk-start node's column, so one dedent covers both).
-  return raw.map((r, i) => ({
-    insert: r.insert,
-    kind: r.kind,
-    parentKey: r.parentKey,
-    bareText: dedent(i === 0 ? prefix + r.bareText : r.bareText, r.col),
-    insertOffset: r.insertPos,
-    cursorOffset: i + 1 < raw.length ? raw[i + 1].insertPos : r.insertPos + r.insert.length,
-  }));
+  // An emission too big for one ghost goes out as consecutive pieces, each
+  // inserting where the last one ended.
+  const steps: Step[] = [];
+  raw.forEach((r, i) => {
+    const bareText = dedent(i === 0 ? prefix + r.bareText : r.bareText, r.col);
+    let at = r.insertPos;
+    splitForGhost(r.insert).forEach((piece, k) => {
+      steps.push({
+        insert: piece,
+        kind: k === 0 ? r.kind : "leaf",
+        parentKey: r.parentKey,
+        bareText: k === 0 ? bareText : "",
+        insertOffset: at,
+        cursorOffset: at + piece.length,
+        continuation: k > 0,
+      });
+      at += piece.length;
+    });
+    if (i + 1 < raw.length) steps[steps.length - 1].cursorOffset = raw[i + 1].insertPos;
+  });
+  return steps;
 }

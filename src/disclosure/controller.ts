@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { cleanWalkRegion, computeSteps } from "./walk";
+import { GHOST_MAX_CHARS, cleanWalkRegion, computeSteps } from "./walk";
 import { DisclosureSession } from "./session";
 import { appendEdit, containerKeyChain, innermostContainerKey } from "./anchoredInsert";
 import { buildRecoveryGhost } from "./recoveryGhost";
@@ -221,6 +221,7 @@ export class DisclosureController {
     const s = this.session;
     const step = s?.current();
     if (!s || !step) return undefined;
+    if (step.continuation) return undefined; // mid-node: offerRecovery surfaces it
     if (document.uri.toString() !== s.uri.toString()) return undefined;
     if (!this.recoverySettled) return undefined; // still typing — don't flash on auto re-query
     const at = document.offsetAt(position);
@@ -243,6 +244,16 @@ export class DisclosureController {
     }
 
     const built = buildRecoveryGhost(lineText, position.character, step);
+    // Recovery re-lands a split node whole, which can put it back over VS
+    // Code's ghost limit. A served item there would be dropped silently; with
+    // none served, Tab falls through to the re-anchored continue and lands it.
+    if (built.text.length > GHOST_MAX_CHARS) {
+      this.logQuery(
+        `recovery step ${s.index + 1}/${s.steps.length} is ${built.text.length} chars, over VS Code's ` +
+          `${GHOST_MAX_CHARS}-char ghost limit — no ghost; Tab lands it re-anchored`,
+      );
+      return undefined;
+    }
     this.logQuery(
       `provider served recovery step ${s.index + 1}/${s.steps.length} ` +
         `(${built.text.split("\n").length} line(s), ${built.text.length} chars)`,
@@ -361,7 +372,7 @@ export class DisclosureController {
       }
       this.recoveryGhost = undefined;
       this.recoverySettled = true; // the human accepted, not typed — show the next ghost at once
-      session.advance();
+      session.advancePastNode();
       if (session.done) {
         this.finish(session);
         return;
@@ -460,6 +471,10 @@ export class DisclosureController {
     const step = s?.current();
     if (!s || !step || !this.diverged || !this.recoverySettled) return;
     if (editor.document.uri.toString() !== s.uri.toString()) return;
+    if (step.continuation) {
+      this.surfaceMidNodeDivergence();
+      return;
+    }
 
     const symbolText = this.extractSymbol(editor.document);
     const cursorRel = editor.document.offsetAt(editor.selection.active) - s.anchorOffset;
@@ -565,6 +580,10 @@ export class DisclosureController {
       this.output.appendLine("[disclosure] tab: focus is on another file"); // never write another file
       return;
     }
+    if (step.continuation) {
+      this.surfaceMidNodeDivergence();
+      return;
+    }
     this.clearSettle();
     this.recoverySettled = true; // an explicit Tab — the next ghost may show at once
     const symbolText = this.extractSymbol(editor.document);
@@ -609,9 +628,17 @@ export class DisclosureController {
     const caret = editor.document.positionAt(caretOff);
     editor.selection = new vscode.Selection(caret, caret);
     revealCursor(editor, caret);
-    s.advance();
+    s.advancePastNode();
     this.output.appendLine(`[disclosure] continue (re-anchored) ${s.index}/${s.steps.length}`);
     if (s.done) this.finish(s);
+  }
+
+  // The human diverged between two pieces of a split node. The first piece is
+  // in the buffer, the rest has no node of its own to re-anchor to, and landing
+  // it at the caret would be a guess.
+  private surfaceMidNodeDivergence(): void {
+    this.output.appendLine("[disclosure] diverged inside a split node — the rest can't re-anchor");
+    this.surfaceCollision();
   }
 
   // The next node has nowhere to land — its parent in the tree is gone. Mark the
