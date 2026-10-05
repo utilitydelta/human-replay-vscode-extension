@@ -1,5 +1,38 @@
 # Changelog
 
+## 2.4.0
+
+Type a line of your own mid-replay and the replay used to treat it as drift.
+A TODO comment above landed code, a note between two items: the next step
+collided, resume refused the file, or the step finished as "differs from the
+sandbox". One recorded session ended in "finish this symbol by hand" from a
+comment plus a re-arm click, neither of which caused it alone.
+
+Your lines are yours now. The replay works around them when the bytes prove it
+can, and stops loud when they don't.
+
+- A comment typed above the symbol being walked moves the walk with it.
+  Before, every later offset landed that many bytes early.
+- Modify steps resolve through every edit the session saw, yours included. A
+  comment inside a step's context window no longer refuses an insert whose
+  position was exact. Where your line and the step claim the same spot, it
+  still collides: which goes first is your call.
+- Create-file resume tolerates whole lines you added anywhere in the landed
+  part. A create counts as landed with your lines in it. A modify stays
+  byte-exact on reload, and says so in the status bar instead of a toast.
+- Edit inside a hunk's incoming bytes and you own the hunk. The step retires
+  as taken over, and a later cancel or skip no longer deletes what you typed.
+  Tab and Shift+Esc hold until the next hunk is on screen.
+- Cancel removes unratified bytes whatever has focus, and a re-run waits for
+  that removal before it reads the file. That was the re-arm incident.
+- Patch steps that only add blank lines (the final newline, spacing between
+  items) land without a gesture. No more "Review hunks" toast for a newline
+  you can't see. Patches that remove blank lines keep their Tab, because the
+  line might be yours.
+
+Five new oracles, one replaying the recorded re-arm incident bytes. The suite went
+from 1,905 tests to 2,086.
+
 ## 2.3.0
 
 A big statement could kill Tab mid-walk. The log said the step was served, the
