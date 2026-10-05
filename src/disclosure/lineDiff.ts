@@ -239,3 +239,52 @@ export function changedLineSpan(oldText: string, newText: string): { offset: num
   const end = bStarts[b.length - post];
   return { offset, len: Math.max(0, end - offset) };
 }
+
+// A file cut at its non-blank lines: `gaps[i]` is the run of blank lines
+// before `lines[i]`, and `gaps[lines.length]` the run after the last one.
+function blankGaps(text: string): { lines: string[]; gaps: string[][] } {
+  const lines: string[] = [];
+  const gaps: string[][] = [[]];
+  for (const l of text.split("\n")) {
+    if (l.trim() === "") gaps[gaps.length - 1].push(l);
+    else {
+      lines.push(l);
+      gaps.push([]);
+    }
+  }
+  return { lines, gaps };
+}
+
+// Whether every line of `small` appears in `big` in order (blank runs only).
+function runWithin(small: string[], big: string[]): boolean {
+  let j = 0;
+  for (const l of small) {
+    while (j < big.length && big[j] !== l) j++;
+    if (j === big.length) return false;
+    j++;
+  }
+  return true;
+}
+
+/**
+ * A patch whose whole delta is blank lines: "adds" when the sandbox only adds
+ * blank lines (the missing final newline, spacing between items), "removes"
+ * when it only removes them, undefined for anything else. Every non-blank line
+ * must be byte-identical on both sides, indentation included, so a Python
+ * indent change or a trailing-space edit never qualifies.
+ *
+ * Why: the guide closes files with Patch steps that sweep spacing and the final
+ * newline, and each one stopped the replay on a "Review hunks" toast for a
+ * line the human can't even see. "adds" lands without a gesture: only sandbox
+ * bytes go in, and no live byte, human or branch, comes out. "removes" keeps
+ * its Tab, because a blank line it strikes may be the human's.
+ */
+export function blankLineDelta(live: string, sandbox: string): "adds" | "removes" | undefined {
+  if (live === sandbox) return undefined;
+  const a = blankGaps(live);
+  const b = blankGaps(sandbox);
+  if (a.lines.length !== b.lines.length || a.lines.some((l, i) => l !== b.lines[i])) return undefined;
+  if (a.gaps.every((g, i) => runWithin(g, b.gaps[i]))) return "adds";
+  if (b.gaps.every((g, i) => runWithin(g, a.gaps[i]))) return "removes";
+  return undefined;
+}

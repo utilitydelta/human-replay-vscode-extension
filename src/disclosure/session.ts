@@ -6,7 +6,10 @@ import { Retrospective } from "../retrospective/retrospective";
 // One disclosure in flight: the step list, a program counter, and the anchor —
 // the absolute document offset where the region begins. cursorOffsets are
 // region-relative, so an absolute position is `anchorOffset + cursorOffset`.
-// Nothing inserts before the anchor, so it stays fixed for the whole walk.
+// The walk never inserts before the anchor, but the human can: a comment typed
+// above the symbol moves every byte of it, so the controller shifts the anchor
+// by that edit (shiftAnchor). Without the shift every baked offset lands that
+// many bytes early.
 //
 // `sourceLength` is the disclosed symbol's byte length (the walk reconstructs it
 // byte-exact), so the symbol range is [anchorOffset, anchorOffset + sourceLength].
@@ -16,7 +19,7 @@ export class DisclosureSession {
 
   constructor(
     readonly uri: vscode.Uri,
-    readonly anchorOffset: number,
+    public anchorOffset: number,
     readonly steps: Step[],
     readonly sourceLength: number,
     readonly retrospective?: Retrospective,

@@ -10,7 +10,7 @@
 
 import { EditOp, Landmark, OpAnchor, parseRoot } from "./diff";
 import { SyntaxNode } from "./walk";
-import { ObservedEdit } from "./ledger";
+import { ObservedEdit, transformRange } from "./ledger";
 import { InsertProof, resolveInsertPoint } from "./proof";
 
 // Walk a named-child-index path from the root to the addressed node.
@@ -115,6 +115,40 @@ export interface StepAddress {
   proof?: InsertProof;
 }
 
+// The baked range plus our own accepts' delta, byte-validated, and ONLY while
+// the ledger holds no foreign edit. A foreign line moves the bytes; this leg
+// can't see it and byte-validates on whatever now sits at the stale offset.
+// When the human's line is exactly as long as the gap between two equal
+// texts, that is the wrong occurrence, silently (review-session-v4 finding 4).
+// The ledger leg sees every edit, so it owns that case.
+function selfOnlyRange(symText: string, step: StepAddress, selfDelta: number, ledger: readonly ObservedEdit[]): [number, number] | null {
+  if (ledger.some((e) => !e.self)) return null;
+  const a: [number, number] = [step.start + selfDelta, step.end + selfDelta];
+  if (a[0] < 0 || a[1] > symText.length) return null;
+  return symText.slice(a[0], a[1]) === step.originalText ? a : null;
+}
+
+// The baked range pushed through every observed edit, self and foreign, and
+// byte-validated. Before this leg a replace saw only our own accepts
+// (selfDelta): a human comment above it broke the arithmetic, shifted the
+// structural path onto a neighbour (comments are named nodes), and a short
+// non-unique originalText (`value`) left the content leg nothing, so the step
+// collided on an edit that never touched it (human-edit-limits.test.cjs).
+function ledgerRange(symText: string, step: StepAddress, ledger: readonly ObservedEdit[]): [number, number] | null {
+  const t = transformRange(step.start, step.end, ledger);
+  if (!t || t[1] > symText.length) return null;
+  return symText.slice(t[0], t[1]) === step.originalText ? t : null;
+}
+
+// The human's edits reached into this step's own bytes: they took the hunk
+// over. Any other byte-valid match is a twin, not the target. With `alpha`
+// rewritten to `gamma` in `g(alpha, alpha)`, the content leg found the one
+// `alpha` left, the argument the human never touched (review-session-v4 F).
+// No leg may land; the controller reads the collision as "taken over".
+function touchedByHuman(step: StepAddress, ledger: readonly ObservedEdit[]): boolean {
+  return ledger.some((e) => !e.self) && transformRange(step.start, step.end, ledger) === null;
+}
+
 /**
  * Resolve one step of the interactive walk against the live symbol text.
  *
@@ -150,9 +184,11 @@ export function resolveStepNoTree(
     const p = resolveInsertPoint(symText, step, ledger, null);
     return p === null ? null : [p, p];
   }
-  const a: [number, number] = [step.start + selfDelta, step.end + selfDelta];
-  const aInBounds = a[0] >= 0 && a[1] <= symText.length;
-  if (aInBounds && symText.slice(a[0], a[1]) === step.originalText) return a;
+  const a = selfOnlyRange(symText, step, selfDelta, ledger);
+  if (a) return a;
+  if (touchedByHuman(step, ledger)) return null;
+  const lr = ledgerRange(symText, step, ledger);
+  if (lr) return lr;
   return resolveByContent(symText, step.originalText);
 }
 
@@ -171,10 +207,17 @@ export function resolveStep(
     const p = resolveInsertPoint(symText, step, ledger, sr ? sr[0] : null);
     return p === null ? null : [p, p];
   }
-  const a: [number, number] = [step.start + selfDelta, step.end + selfDelta];
-  const aInBounds = a[0] >= 0 && a[1] <= symText.length;
-  if (aInBounds && symText.slice(a[0], a[1]) === step.originalText) return a;
-  if (sr && symText.slice(sr[0], sr[1]) === step.originalText) return sr;
+  const a = selfOnlyRange(symText, step, selfDelta, ledger);
+  if (a) return a;
+  if (touchedByHuman(step, ledger)) return null;
+  const lr = ledgerRange(symText, step, ledger);
+  if (lr) return lr;
+  // A foreign edit renumbers named-child paths (comments are named nodes), so
+  // a byte-valid structural hit may be a twin of the target, not the target:
+  // a comment before `g(alpha, alpha)` plus a typo fixed inside the second
+  // `alpha` put the replace on the first (review-session-v4 finding B). With
+  // the human's edits on the ledger, only the unique-content leg remains.
+  if (!ledger.some((e) => !e.self) && sr && symText.slice(sr[0], sr[1]) === step.originalText) return sr;
   return resolveByContent(symText, step.originalText);
 }
 

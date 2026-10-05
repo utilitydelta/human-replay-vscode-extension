@@ -110,6 +110,15 @@ export class DiffReplayController {
   // reads a stale zero-length symbol and reports a spurious collision. No
   // event path may resolve until the arm completes.
   private arming = false;
+  // A cancel's pending-bytes removal still in flight. A re-run that reads the
+  // target before it lands diffs a snapshot holding bytes about to vanish: the
+  // metablock_model.rs incident (session-v4), where hunk 2 targeted the
+  // removed segment and collided on the first resolve.
+  private removalInFlight: Promise<void> | undefined;
+  // A takeover retired the armed step, and the next one renders only when the
+  // settle fires. Until then Tab or Shift+Esc would land or skip a hunk the
+  // human never saw; both hold instead.
+  private nextUnseen = false;
   private settleTimer: ReturnType<typeof setTimeout> | undefined;
   // The human edited the current step's own line (its doomed range) — they're taking
   // over THIS hunk. A collision there must HOLD, never alarm: surfacing is reserved
@@ -326,6 +335,7 @@ export class DiffReplayController {
     this.typing = false;
     this.foreignPaused = false;
     this.editedCurrentLine = false;
+    this.nextUnseen = false;
     this.clearSettle();
     this.cancelPendingTrigger();
     const tally = steps.reduce(
@@ -348,12 +358,24 @@ export class DiffReplayController {
     this.output.appendLine(`[diff-replay] cancelled at step ${this.session.index}`);
     this.gestures.hide();
     const editor = vscode.window.activeTextEditor;
-    // Unratified pending bytes must not survive a cancel (fire-and-forget:
-    // the session is going away either way; a failure logs).
-    if (this.session.pending && editor && editor.document.uri.toString() === this.session.uri.toString()) {
-      void this.removePending(editor).catch((e) =>
-        this.output.appendLine(`[diff-replay] pending cleanup failed: ${e instanceof Error ? e.message : String(e)}`),
-      );
+    // Unratified pending bytes must not survive a cancel, whatever has focus:
+    // a cancel from the panel or another tab used to leave them in place,
+    // where the next resume read them as landed. The removal is tracked, not
+    // awaited here; settleRemoval is how a re-run waits for it.
+    const pending = this.session.pending;
+    const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === this.session!.uri.toString());
+    if (pending && doc) {
+      this.session.pending = undefined;
+      const range = new vscode.Range(doc.positionAt(pending.start), doc.positionAt(pending.start + pending.length));
+      const edit = new vscode.WorkspaceEdit();
+      edit.delete(doc.uri, range);
+      this.removalInFlight = Promise.resolve(vscode.workspace.applyEdit(edit))
+        .then((ok) => {
+          if (!ok) throw new Error("edit rejected");
+          this.output.appendLine(`[diff-replay] cancel removed ${pending.length} pending byte(s)`);
+        })
+        .catch((e) => this.output.appendLine(`[diff-replay] pending cleanup failed: ${e instanceof Error ? e.message : String(e)}`))
+        .finally(() => (this.removalInFlight = undefined));
     }
     if (editor) this.clearDecorations(editor);
     void vscode.commands.executeCommand("setContext", DECORATION_CONTEXT, false);
@@ -361,6 +383,12 @@ export class DiffReplayController {
     this.clearSettle();
     this.cancelPendingTrigger();
     this.session = undefined;
+  }
+
+  /** Awaits a cancel's pending-bytes removal, so the next reader of the
+   *  target sees the buffer without the unratified bytes. */
+  async settleRemoval(): Promise<void> {
+    await this.removalInFlight;
   }
 
   /** Tab with no ghost up while a step is armed: re-trigger the ghost when the
@@ -475,11 +503,17 @@ export class DiffReplayController {
       s.symbolLen = w.symbolLen;
 
       // Keep the pending range on its bytes too, or a skip after a human edit
-      // above it would delete the wrong span.
+      // above it would delete the wrong span. An edit reaching INTO the range
+      // (typing inside the incoming bytes, a delete straddling its start) means
+      // the human took this hunk over: resizing the range made a later cancel
+      // or skip delete what they typed, or leave unratified bytes behind for
+      // resume to count as landed (review-session-v4 finding D). Their bytes
+      // stay; the step retires as taken over by hand.
       if (s.pending) {
         const delta = c.text.length - c.rangeLength;
         if (c.rangeOffset + c.rangeLength <= s.pending.start) s.pending.start += delta;
-        else if (c.rangeOffset < s.pending.start + s.pending.length) s.pending.length += delta;
+        else if (c.rangeOffset < s.pending.start + s.pending.length)
+          this.takeOverPending(s, c.rangeOffset === s.pending.start && c.rangeLength === s.pending.length && c.text === "");
       }
 
       const doomed = s.lastServed?.range;
@@ -549,6 +583,9 @@ export class DiffReplayController {
     this.settleTimer = setTimeout(() => {
       this.settleTimer = undefined;
       this.typing = false;
+      // The settle renders the next hunk, or its resolve holds/surfaces, which
+      // Tab re-checks on its own. Either way nothing lands unseen from here.
+      this.nextUnseen = false;
       if (this.foreignPaused) return; // the pause outlives the settle — only the re-run resumes
       const editor = vscode.window.activeTextEditor;
       const s = this.session;
@@ -627,6 +664,10 @@ export class DiffReplayController {
     if (!s || !step) return;
     if (this.foreignPaused) {
       this.output.appendLine("[diff-replay] skip held — paused on foreign bytes at the armed point; re-run the step to continue");
+      return;
+    }
+    if (this.nextUnseen) {
+      this.output.appendLine("[diff-replay] skip held — the next hunk shows once your typing settles");
       return;
     }
     this.clearSettle();
@@ -742,6 +783,7 @@ export class DiffReplayController {
     const s = this.session;
     if (!s) return;
     s.lastServed = { range: new vscode.Range(at, at), text };
+    this.nextUnseen = false;
     this.arming = true;
     let applied: boolean;
     try {
@@ -781,6 +823,28 @@ export class DiffReplayController {
     ]);
   }
 
+  // The human edited inside the pending bytes: they own them now. Retire the
+  // step like an on-line takeover (collisionAction's "advance"), never delete
+  // or re-serve them. Deferred off the change event: completion and the next
+  // arm both edit the buffer.
+  private takeOverPending(s: Session, removedWhole: boolean): void {
+    s.pending = undefined;
+    s.index++;
+    this.editedCurrentLine = false;
+    this.nextUnseen = s.index < s.steps.length;
+    this.output.appendLine(
+      removedWhole
+        ? `[diff-replay] step ${s.index}/${s.steps.length} skipped — you removed the incoming bytes (undo or delete)`
+        : `[diff-replay] step ${s.index}/${s.steps.length} taken over — you edited the incoming bytes; they stay as you left them`,
+    );
+    setTimeout(() => {
+      if (this.session !== s) return;
+      const editor = vscode.window.visibleTextEditors.find((e) => e.document.uri.toString() === s.uri.toString());
+      if (editor) this.clearDecorations(editor);
+      if (s.index >= s.steps.length) this.complete(editor);
+    }, 0);
+  }
+
   // Confirm the pending bytes: they are already in the buffer and booked, so
   // keeping them is pure bookkeeping.
   private keepPending(editor: vscode.TextEditor): void {
@@ -814,6 +878,7 @@ export class DiffReplayController {
   // The render half of the dramatic step, shared by the first show and the settle
   // re-anchor (which passes reposition=false so it never yanks the cursor).
   private renderDecoration(editor: vscode.TextEditor, range: vscode.Range, text: string, reposition: boolean): void {
+    this.nextUnseen = false;
     this.session!.lastServed = { range, text };
     editor.setDecorations(this.doomed, [range]);
     // contentText can't draw newlines: a block previews its first incoming line
@@ -874,6 +939,10 @@ export class DiffReplayController {
     if (this.foreignPaused) {
       this.output.appendLine("[diff-replay] tab held — paused on foreign bytes at the armed point; re-run the step to continue");
       return true; // a deliberate wait, not a dead key
+    }
+    if (this.nextUnseen) {
+      this.output.appendLine("[diff-replay] tab held — the next hunk shows once your typing settles");
+      return true;
     }
     this.accepting = true;
     try {
@@ -940,13 +1009,13 @@ export class DiffReplayController {
   }
 
   // Single completion path for both modes: clear UI, drop the session, fire the hook.
-  private complete(editor: vscode.TextEditor): void {
+  private complete(editor: vscode.TextEditor | undefined): void {
     const s = this.session;
     if (!s) return;
     this.clearSettle();
     this.cancelPendingTrigger();
     this.gestures.hide();
-    this.clearDecorations(editor);
+    if (editor) this.clearDecorations(editor);
     void vscode.commands.executeCommand("setContext", DECORATION_CONTEXT, false);
     void vscode.commands.executeCommand("setContext", ACTIVE_CONTEXT, false);
     this.output.appendLine(`[diff-replay] complete (${s.steps.length} steps)`);

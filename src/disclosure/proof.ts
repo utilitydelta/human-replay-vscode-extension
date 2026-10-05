@@ -19,7 +19,7 @@
 // context occurs 2693 times); uniqueness is demanded only where a leg actually
 // searches (the content leg). Pure byte arithmetic throughout — model-free.
 
-import { ObservedEdit, transformPoint } from "./ledger";
+import { ObservedEdit, foreignSpans, transformPoint } from "./ledger";
 
 export interface InsertProof {
   left: string;
@@ -187,12 +187,37 @@ export function explainInsertCollision(
   return `arith: ${arith}; ${content}`;
 }
 
+/** The arithmetic point's proof, re-checked with the human's inserted bytes
+ *  set aside (foreignSpans). The proof's context reaches a line below and up
+ *  to eight above, so a comment typed there refused a point the arithmetic
+ *  had exactly. Removing only bytes the ledger proves are the human's, the
+ *  check is the same dual proof against the bytes it was baked from. A point
+ *  touching a span stays refused: the human's line and the insert both claim
+ *  that spot, and which goes first is theirs to say. */
+function proofOkBesideHuman(symText: string, p: number, proof: InsertProof, ledger: readonly ObservedEdit[]): boolean {
+  const spans = foreignSpans(ledger);
+  if (!spans || spans.length === 0) return false;
+  if (spans.some(([s, e]) => p >= s && p <= e)) return false;
+  let view = "";
+  let from = 0;
+  let vp = p;
+  for (const [s, e] of spans) {
+    view += symText.slice(from, s);
+    from = e;
+    if (e <= p) vp -= e - s;
+  }
+  view += symText.slice(from);
+  return proofOk(view, vp, proof);
+}
+
 /**
  * Resolve a pure insert's landing point, every leg gated by the dual proof:
  *
  *   1. arithmetic — the baked old-coords start transformed through the ledger
  *      (self accepts and foreign edits alike, arrival-ordered). Skipped when
- *      an edit straddled the point (dirty): no arithmetic answer exists.
+ *      an edit straddled the point (dirty): no arithmetic answer exists. When
+ *      the human's own inserted lines sit inside the proof's context, the
+ *      proof is re-checked with them set aside (proofOkBesideHuman).
  *   2. structural — the caller's tree-resolved candidate, same gate.
  *   3. content — the left context re-found in the live buffer (line-start
  *      anchored, exactly once), right side ratifying the match end, and the
@@ -213,6 +238,7 @@ export function resolveInsertPoint(
   if (!proof) return null; // an unproven insert never lands
   const t = transformPoint(step.start, ledger);
   if (!t.dirty && proofOk(symText, t.point, proof)) return t.point;
+  if (!t.dirty && proofOkBesideHuman(symText, t.point, proof, ledger)) return t.point;
   if (structuralPoint !== null && proofOk(symText, structuralPoint, proof)) return structuralPoint;
   if (blank(proof.left) || t.dirty) return null;
   let n = 0;

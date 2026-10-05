@@ -83,11 +83,13 @@ export class ReplayOrchestrator {
     );
   }
 
-  /** Awaits any in-flight restore, so a re-run resolves its Before bytes from
-   *  the restored buffer, not from the hole (the runner awaits this after its
-   *  teardown cancels). */
+  /** Awaits any in-flight restore or pending-bytes removal, so a re-run
+   *  resolves its Before bytes from the settled buffer, not from the hole or
+   *  from bytes about to vanish (the runner awaits this after its teardown
+   *  cancels). */
   async settleRestore(): Promise<void> {
     await this.restoreInFlight;
+    await this.diffReplay.settleRemoval();
   }
 
   /** A Patch step's whole-file, line-grain replay: hunks from a line diff of

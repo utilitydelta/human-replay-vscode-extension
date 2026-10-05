@@ -6,6 +6,7 @@ import { buildRecoveryGhost } from "./recoveryGhost";
 import { LanguageSpec, RUST } from "./language";
 import { revealCursor } from "./reveal";
 import { Retrospective } from "../retrospective/retrospective";
+import { classifyWalkChanges } from "./ledger";
 
 const DIVERGED_CONTEXT = "humanReplay.disclosureDiverged";
 const ACTIVE_CONTEXT = "humanReplay.disclosureActive";
@@ -414,31 +415,39 @@ export class DisclosureController {
     if (!s) return;
     if (e.document.uri.toString() !== s.uri.toString()) return;
 
+    // A human edit above the symbol moves all of it, diverged or not, or every
+    // baked offset and every symbol re-read lands the edit's length off. The
+    // divergence test reads the same event against the same pre-event anchor
+    // (classifyWalkChanges); session-v4.
+    const changes = e.contentChanges.map((c) => ({
+      rangeOffset: c.rangeOffset,
+      rangeLength: c.rangeLength,
+      textLength: c.text.length,
+      self: !!this.lastOffered && c.text === this.lastOffered.text,
+    }));
+    const { anchor, inRegion } = classifyWalkChanges(s.anchorOffset, changes);
+    if (anchor !== s.anchorOffset) {
+      this.output.appendLine(`[disclosure] edit above the symbol — anchor ${s.anchorOffset} → ${anchor}`);
+      s.anchorOffset = anchor;
+    }
+
     if (this.diverged) {
-      for (const c of e.contentChanges) {
-        if (this.lastOffered && c.text === this.lastOffered.text) return; // our own insert/accept
-        this.recoverySettled = false;
-        this.clearClimbPreview(); // offsets are shifting under the preview
-        this.scheduleGhost();
-        return;
-      }
+      if (changes.some((c) => c.self)) return; // our own insert/accept
+      this.recoverySettled = false;
+      this.clearClimbPreview(); // offsets are shifting under the preview
+      this.scheduleGhost();
       return;
     }
 
-    for (const c of e.contentChanges) {
-      if (c.text === "" && c.rangeLength === 0) continue;
-      if (c.rangeOffset + c.rangeLength <= s.anchorOffset) continue; // edit above the symbol — not ours to recover
-      if (this.lastOffered && c.text === this.lastOffered.text) continue; // our own accept
-      this.setDiverged(true);
-      this.recoverySettled = false;
-      this.scheduleGhost();
-      this.output.appendLine("[disclosure] divergence detected — recovery ghost re-anchors to your cursor");
-      void vscode.window.setStatusBarMessage(
-        "Human Replay: you took over — Tab keeps placing the planned nodes at your cursor",
-        4000,
-      );
-      return;
-    }
+    if (!inRegion) return; // above the symbol, or our own accept — not ours to recover
+    this.setDiverged(true);
+    this.recoverySettled = false;
+    this.scheduleGhost();
+    this.output.appendLine("[disclosure] divergence detected — recovery ghost re-anchors to your cursor");
+    void vscode.window.setStatusBarMessage(
+      "Human Replay: you took over — Tab keeps placing the planned nodes at your cursor",
+      4000,
+    );
   }
 
   private clearSettle(): void {

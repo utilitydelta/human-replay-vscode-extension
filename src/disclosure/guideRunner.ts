@@ -7,8 +7,8 @@ import { ReplayOrchestrator } from "./orchestrator";
 import { parseRoot } from "./diff";
 import { countItemsByName, findItemByName, leadingTriviaStart, walkableSource, SyntaxNode } from "./walk";
 import { planCreateInsertion, separatorToInsert, splitLeadingPad } from "./insertion";
-import { FileSegment, planFileWalk, resumeIndex, splitTrailing } from "./fileWalk";
-import { patchSummary } from "./lineDiff";
+import { FileSegment, landedWithAdditions, leadPlan, planFileWalk, resumeWalk, splitTrailing } from "./fileWalk";
+import { blankLineDelta, countLines, lineDiffSteps, patchSummary } from "./lineDiff";
 import { Retrospective, gates } from "../retrospective/retrospective";
 import { PendingGate, RetroGate, gateKey } from "../retrospective/gate";
 import { DwellGate } from "./dwell";
@@ -96,7 +96,17 @@ export class GuideRunner {
   // it. Each segment is one engine run (walk or block ghost); completeCurrent
   // chains the next until the plan is spent, then the step itself completes.
   private fileWalk:
-    | { stepId: string; at: number; segments: FileSegment[]; uri: vscode.Uri; spec: LanguageSpec | undefined; retro: Retrospective }
+    | {
+        stepId: string;
+        at: number;
+        segments: FileSegment[];
+        uri: vscode.Uri;
+        spec: LanguageSpec | undefined;
+        retro: Retrospective;
+        // Bytes of the current segment's separator already at end-of-file (a
+        // resume after the lead was typed). Spent by the first segment run.
+        leadTyped: number;
+      }
     | undefined;
 
   private retroSurface: ((retro: Retrospective, index: number) => void) | undefined;
@@ -205,7 +215,11 @@ export class GuideRunner {
       // delta as Tab-gated patch hunks.
       const expected = fw.segments.map((s) => s.sep + s.body).join("");
       const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === fw.uri.toString());
-      if (doc && doc.getText() !== expected) {
+      // Lines the human added mid-walk are theirs, not drift: the same
+      // additive proof the landed check uses on reload.
+      if (doc && doc.getText() !== expected && landedWithAdditions(expected, doc.getText())) {
+        this.output.appendLine(`[guide] step ${fw.stepId}: file landed with your added lines kept`);
+      } else if (doc && doc.getText() !== expected) {
         this.output.appendLine(`[guide] step ${fw.stepId}: landed bytes differ from the sandbox — blocked`);
         vscode.window.showWarningMessage(
           `Human Replay: step ${fw.stepId} finished but the file differs from the sandbox. Re-run the step to land the difference as patch hunks, or fix by hand.`,
@@ -505,6 +519,21 @@ export class GuideRunner {
     const live = this.symbolFrom(doc.getText(), step.symbol, spec);
     if (live === after) return "ok";
     if (live === undefined) return "unresolvable"; // the caller stops and says why
+    // Every sandbox line landed and the rest are lines the human added: a
+    // create counts that as landed, here and on reload (stepAlreadyLanded).
+    // A modify has a base, so on reload it reads as pending; still say so, but
+    // in the status bar, not a toast for a comment they typed on purpose.
+    if (landedWithAdditions(after, live)) {
+      if (step.action === "create") {
+        this.output.appendLine(`[guide] step ${step.id}: landed \`${step.symbol}\` with your added lines kept`);
+        return "ok";
+      }
+      this.output.appendLine(
+        `[guide] step ${step.id}: landed \`${step.symbol}\` plus your added lines — done this session, pending on reload (a modify's landed check is byte-exact)`,
+      );
+      void vscode.window.setStatusBarMessage(`Human Replay: step ${step.id} landed, your added lines kept`, 4000);
+      return "differs";
+    }
     this.output.appendLine(
       `[guide] step ${step.id}: landed \`${step.symbol}\` differs from the sandbox — done this session, pending on reload`,
     );
@@ -599,7 +628,9 @@ export class GuideRunner {
     const rel = step.file.split(":")[0];
     const live = this.readLiveFile(rel);
     const sandbox = this.readSandboxFile(step);
-    if (live !== undefined && sandbox !== undefined && live === sandbox) {
+    if (live !== undefined && sandbox !== undefined && (live === sandbox || blankLineDelta(live, sandbox) !== undefined)) {
+      // Nothing to reconcile, or only blank lines: no ceremony. runPatch lands
+      // added blank lines itself and puts a removal straight on its Tab.
       void this.runStep(index);
       return;
     }
@@ -1117,9 +1148,10 @@ export class GuideRunner {
 
     // A skeleton (fenced) create-file is landed once the target BEGINS with it —
     // the symbol steps that follow grow the file past the skeleton, and their
-    // growth must not un-land this step. A whole-file step stays byte-equality.
+    // growth must not un-land this step. A whole-file step is landed when every
+    // sandbox line is there, plus any whole lines the human added.
     const landed =
-      existing !== undefined && (step.after !== undefined ? existing.startsWith(bytes) : existing === bytes);
+      existing !== undefined && (step.after !== undefined ? existing.startsWith(bytes) : landedWithAdditions(bytes, existing));
     if (landed || bytes === "") {
       // Already landed, or an empty sandbox file — nothing to disclose. Create
       // the empty file if needed, mark done, flow.
@@ -1138,8 +1170,10 @@ export class GuideRunner {
 
     const spec = languageForFile(rel);
     const segments = planFileWalk(bytes, spec);
-    const at = existing === undefined ? 0 : resumeIndex(segments, existing);
-    if (at === undefined || at >= segments.length) {
+    // Resume tolerates whole lines the human added anywhere in the landed part:
+    // the walk appends at end-of-file, so their lines stay where they typed them.
+    const resume = existing === undefined ? { at: 0, leadTyped: 0 } : resumeWalk(segments, existing, spec);
+    if (resume === undefined || resume.at >= segments.length) {
       if ((wasMidFileWalk || wasBlocked) && existing !== undefined) {
         // Re-armed mid-segment or re-run after a block: the buffer holds OUR
         // drifted build, not a foreign file. The patch surface lands the
@@ -1164,9 +1198,14 @@ export class GuideRunner {
       edit.createFile(targetUri, { ignoreIfExists: true });
       await vscode.workspace.applyEdit(edit);
     }
-    this.fileWalk = { stepId: step.id, at, segments, uri: targetUri, spec, retro: step.retro };
+    const { at, leadTyped } = resume;
+    this.fileWalk = { stepId: step.id, at, segments, uri: targetUri, spec, retro: step.retro, leadTyped };
+    const kept = existing !== undefined && at > 0 && !existing.startsWith(segments.slice(0, at).map((g) => g.sep + g.body).join(""));
     this.output.appendLine(
-      `[guide] step ${step.id}: file walk of ${rel} — ${segments.length} segment(s)${at > 0 ? `, resuming at ${at + 1}` : ""}`,
+      `[guide] step ${step.id}: file walk of ${rel} — ${segments.length} segment(s)` +
+        (at > 0 ? `, resuming at ${at + 1}` : "") +
+        (kept ? " (your added lines kept)" : "") +
+        (leadTyped > 0 ? `, ${leadTyped} separator byte(s) already typed` : ""),
     );
     await this.runNextSegment();
   }
@@ -1192,7 +1231,9 @@ export class GuideRunner {
       // segment as one hunk — deterministic, parse-free, one Tab.
       const text = doc.getText();
       const editor = await this.parkCursor(doc, new vscode.Position(0, 0));
-      await this.orchestrator.startPatch(editor, text, text + seg.sep + seg.body, retro);
+      const sep = seg.sep.slice(fw.leadTyped);
+      fw.leadTyped = 0;
+      await this.orchestrator.startPatch(editor, text, text + sep + seg.body, retro);
       return;
     }
 
@@ -1202,15 +1243,15 @@ export class GuideRunner {
     // inserted at end-of-file with the cursor parked ahead of it.
     const { content, tail } = splitTrailing(rest);
     const walkable = content !== "" && walkableSource(content, fw.spec);
-    const lead = seg.sep + pad;
-    const typed = walkable ? lead + tail : lead;
+    const { type: typed, cursorBack } = leadPlan({ sep: seg.sep, pad, tail, walkable }, doc.getText(), fw.leadTyped);
+    fw.leadTyped = 0;
     if (typed) {
       const opened = await vscode.window.showTextDocument(doc, { preview: false });
       const end = doc.positionAt(doc.getText().length);
       const applied = await opened.edit((b) => b.insert(end, typed));
       if (!applied) throw new Error(`separator edit rejected on segment ${fw.at + 1}`);
     }
-    const cursor = doc.positionAt(doc.getText().length - (walkable ? tail.length : 0));
+    const cursor = doc.positionAt(doc.getText().length - cursorBack);
     const editor = await this.parkCursor(doc, cursor);
 
     if (walkable) {
@@ -1263,11 +1304,37 @@ export class GuideRunner {
     }
     this.pc.begin(index);
     this.changed();
+    if (blankLineDelta(targetText, sandboxText) === "adds") {
+      await this.landBlankLines(step, editor, targetText, sandboxText);
+      return;
+    }
     // Line mode anchors on the whole file: park the cursor at file start so the
     // session's anchor offset is 0.
     await this.parkCursor(editor.document, new vscode.Position(0, 0));
     this.output.appendLine(`[guide] step ${step.id} (${index + 1}/${this.steps.length}) patch ${rel}`);
     await this.orchestrator.startPatch(editor, targetText, sandboxText, step.retro);
+  }
+
+  // A patch that only adds blank lines (the final newline, spacing between
+  // items) lands without a gesture: one edit of sandbox bytes, no live byte
+  // removed. It still completes like a walk, so the step's retrospective and
+  // the save run as for any patch.
+  private async landBlankLines(step: ReplayStep, editor: vscode.TextEditor, live: string, sandbox: string): Promise<void> {
+    const hunks = lineDiffSteps(live, sandbox);
+    const doc = editor.document;
+    const ok = await editor.edit((b) => {
+      for (const h of hunks) b.replace(new vscode.Range(doc.positionAt(h.start), doc.positionAt(h.end)), h.replacement);
+    });
+    if (!ok || doc.getText() !== sandbox) {
+      this.output.appendLine(`[guide] step ${step.id}: blank-line patch didn't land clean — falling back to hunks`);
+      await this.parkCursor(doc, new vscode.Position(0, 0));
+      await this.orchestrator.startPatch(editor, doc.getText(), sandbox, step.retro);
+      return;
+    }
+    const lines = hunks.reduce((n, h) => n + countLines(h.replacement) - countLines(h.originalText), 0);
+    this.output.appendLine(`[guide] step ${step.id}: patch was blank lines only — landed ${hunks.length} hunk(s), +${lines} line(s), no gesture`);
+    void vscode.window.setStatusBarMessage(`Human Replay: step ${step.id} added blank lines / final newline`, 4000);
+    this.completeCurrent();
   }
 
   /** Run a step by index: open its file, position the cursor, drive the engine.

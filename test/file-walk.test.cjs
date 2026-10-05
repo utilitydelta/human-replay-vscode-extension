@@ -20,7 +20,7 @@ const EXTERNALS = ["tree-sitter", "tree-sitter-rust", "tree-sitter-c-sharp", "tr
 const bundle = path.join(__dirname, ".file-walk.bundle.cjs");
 fs.writeFileSync(
   path.join(__dirname, ".file-walk.entry.ts"),
-  `export { planFileWalk, resumeIndex, splitTrailing } from "../src/disclosure/fileWalk";\n` +
+  `export { planFileWalk, resumeWalk, splitTrailing } from "../src/disclosure/fileWalk";\n` +
     `export { walkableSource } from "../src/disclosure/walk";\n` +
     `export { splitLeadingPad } from "../src/disclosure/insertion";\n` +
     `export { RUST, CSHARP, TYPESCRIPT, TSX, PYTHON, MARKDOWN, HTML, CSS } from "../src/disclosure/language";\n`,
@@ -33,7 +33,7 @@ esbuild.buildSync({
   platform: "node",
   external: EXTERNALS,
 });
-const { planFileWalk, resumeIndex, splitTrailing, walkableSource, splitLeadingPad, RUST, CSHARP, TYPESCRIPT, TSX, PYTHON, MARKDOWN, HTML, CSS } = require(bundle);
+const { planFileWalk, resumeWalk, splitTrailing, walkableSource, splitLeadingPad, RUST, CSHARP, TYPESCRIPT, TSX, PYTHON, MARKDOWN, HTML, CSS } = require(bundle);
 test.after(() => {
   fs.rmSync(bundle, { force: true });
   fs.rmSync(path.join(__dirname, ".file-walk.entry.ts"), { force: true });
@@ -122,19 +122,22 @@ test("blank lines cut segments; adjacent lines group", () => {
   }
 });
 
-test("resume lands only on segment boundaries", () => {
+test("resume lands on segment boundaries, counting a typed lead separator", () => {
   const c = CORPUS[0]; // the rust corpus: 4 segments
   const segs = planFileWalk(c.code, c.spec());
-  assert.strictEqual(resumeIndex(segs, ""), 0, "an empty target starts from the top");
+  assert.deepStrictEqual(resumeWalk(segs, ""), { at: 0, leadTyped: 0 }, "an empty target starts from the top");
   let built = "";
   for (const [i, s] of segs.entries()) {
     built += s.sep + s.body;
-    assert.strictEqual(resumeIndex(segs, built), i + 1, `boundary after segment ${i}`);
+    assert.deepStrictEqual(resumeWalk(segs, built), { at: i + 1, leadTyped: 0 }, `boundary after segment ${i}`);
     if (i < segs.length - 1) {
-      assert.strictEqual(resumeIndex(segs, built + segs[i + 1].sep), undefined, "mid-segment prefix is a conflict");
+      // A re-arm cancels after the runner typed the next lead: resume at the
+      // same boundary and type only what's missing, never a doubled blank line.
+      const sep = segs[i + 1].sep;
+      assert.deepStrictEqual(resumeWalk(segs, built + sep), { at: i + 1, leadTyped: sep.length }, "lead already typed");
     }
   }
-  assert.strictEqual(resumeIndex(segs, "unrelated bytes"), undefined, "a foreign file is a conflict");
+  assert.strictEqual(resumeWalk(segs, "unrelated bytes"), undefined, "a foreign file is a conflict");
 });
 
 // Which surface each segment rides after the runner's trailing-whitespace split —
