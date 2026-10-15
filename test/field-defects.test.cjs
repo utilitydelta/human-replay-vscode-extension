@@ -182,3 +182,28 @@ for (const shape of PATCH_SHAPES) {
     assert.strictEqual(buf, shape.after, "the patched file equals the sandbox file byte for byte");
   });
 }
+
+// Recorded: celeriant-db-v8 sandbox, celeriant_core/src/primitives/positions.rs,
+// the `impl AbsoluteDiskPosition` block, replay Steps 1.4 and 1.5. Every sibling
+// is a one-liner whose line starts with `#[inline]`, and the trivia walk read
+// each one as an attribute: Create of `read_to` retyped `new`, `get` and
+// `is_sentinel` above it. An attribute with code after it on the line is an
+// item, so the walk stops there and the symbol is its own line only.
+const ONE_LINERS = [
+  "impl AbsoluteDiskPosition {",
+  "    pub const SENTINEL: Self = Self::new(0);",
+  "    #[inline] pub const fn new(raw: u64) -> Self { Self(raw) }",
+  "    #[inline] pub const fn get(self) -> u64 { self.0 }",
+  "    #[inline] pub const fn is_sentinel(self) -> bool { self.get() == 0 }",
+  "    #[inline] pub fn read_to(self, end: Self) -> Option<ReadLength> { end.get().checked_sub(self.get()).map(ReadLength::new) }",
+  "    #[inline] pub fn fill_to(self, end: Self) -> Option<FillLength> { end.get().checked_sub(self.get()).map(FillLength::new) }",
+  "}",
+  "",
+].join("\n");
+
+for (const name of ["new", "get", "is_sentinel", "read_to", "fill_to"]) {
+  test(`field defect — #[inline] one-liner siblings stay out of \`${name}\``, () => {
+    const own = ONE_LINERS.split("\n").find((l) => l.includes(`fn ${name}(`)).trimStart();
+    assert.strictEqual(extractSymbol(ONE_LINERS, name), own);
+  });
+}

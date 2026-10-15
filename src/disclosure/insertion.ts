@@ -12,7 +12,7 @@
 // target, the plan is `blocked` — surfaced to the human, never guessed.
 
 import { LanguageSpec } from "./language";
-import { SyntaxNode, namedChildren } from "./walk";
+import { SyntaxNode, leadingTriviaStart, namedChildren } from "./walk";
 import { parseRoot } from "./diff";
 
 // The file's line ending — scaffolds and separators must match it, or a CRLF
@@ -86,6 +86,15 @@ function linePrefix(src: string, i: number): string {
   const start = src.lastIndexOf("\n", i - 1) + 1;
   const prefix = src.slice(start, i);
   return /^[ \t]*$/.test(prefix) ? prefix : "";
+}
+
+// How many line breaks stand between `item` (its attributes included) and the
+// code before it in the sandbox: 1 for an adjacent line, 2 for one blank line.
+function sandboxBreaksBefore(sandboxText: string, item: SyntaxNode, spec: LanguageSpec): number {
+  let i = leadingTriviaStart(sandboxText, item.startIndex, spec);
+  let breaks = 0;
+  while (i > 0 && /\s/.test(sandboxText[i - 1])) if (sandboxText[--i] === "\n") breaks++;
+  return Math.max(1, breaks);
 }
 
 // Offset of the end of the line containing `i` — before its `\r\n`/`\n`, or text end.
@@ -261,9 +270,14 @@ export function planCreateInsertion(
     }
     // The anchor sibling's own leading whitespace, byte for byte — tabs stay
     // tabs. `indent` stays a column count for the walk's layout arithmetic.
-    const pad = linePrefix(targetText, anchor.startIndex) || " ".repeat(colOf(targetText, anchor.startIndex));
-    const indent = colOf(targetText, anchor.startIndex);
-    const scaffold = `${eol}${eol}${pad}`;
+    // Measured from the anchor's attributes, not its node: in
+    // `#[inline] pub fn get()` the node starts at `pub`, ten columns right.
+    const anchorStart = leadingTriviaStart(targetText, anchor.startIndex, spec);
+    const pad = linePrefix(targetText, anchorStart) || " ".repeat(colOf(targetText, anchorStart));
+    const indent = colOf(targetText, anchorStart);
+    // The line breaks before the new symbol are the sandbox's: a blank line
+    // only when the sandbox has one there.
+    const scaffold = `${eol.repeat(sandboxBreaksBefore(sandboxText, item, spec))}${pad}`;
     return { kind: "container", start: at, end: at, scaffold, cursorAt: at + scaffold.length, indent, container: label };
   }
 

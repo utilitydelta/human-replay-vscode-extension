@@ -165,3 +165,27 @@ test("create placement — the plan is blocked, never guessed, when the containe
   assert.strictEqual(plan.kind, "blocked", "no container in the target means no honest spot");
   assert.match(plan.reason, /not found/i, "and it says which container");
 });
+
+// Recorded: celeriant positions.rs, replay Steps 1.4 then 1.5. The siblings are
+// `#[inline]` one-liners, so each node starts at `pub`, ten columns right of its
+// line's indent. The column came from there (read_to landed at 14, fill_to at
+// 24), and the scaffold always opened a blank line the sandbox doesn't have.
+test("create: #[inline] one-liners land at the sibling column with the sandbox's line breaks", () => {
+  const lines = [
+    "impl AbsoluteDiskPosition {",
+    "    pub const SENTINEL: Self = Self::new(0);",
+    "    #[inline] pub const fn new(raw: u64) -> Self { Self(raw) }",
+    "    #[inline] pub const fn get(self) -> u64 { self.0 }",
+    "    #[inline] pub const fn is_sentinel(self) -> bool { self.get() == 0 }",
+    "    #[inline] pub fn read_to(self, end: Self) -> Option<ReadLength> { end.get().checked_sub(self.get()).map(ReadLength::new) }",
+    "    #[inline] pub fn fill_to(self, end: Self) -> Option<FillLength> { end.get().checked_sub(self.get()).map(FillLength::new) }",
+    "}",
+    "",
+  ];
+  const sandbox = lines.join("\n");
+  let target = [...lines.slice(0, 5), ...lines.slice(7)].join("\n");
+  for (const symbol of ["read_to", "fill_to"]) {
+    target = landCreate(target, planCreateInsertion(target, sandbox, symbol, RUST), extractSymbol(sandbox, symbol, RUST));
+  }
+  assert.strictEqual(target, sandbox);
+});

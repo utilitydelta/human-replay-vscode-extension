@@ -28,8 +28,12 @@ export interface LanguageSpec {
   /** Wrapper node types whose bytes belong to the item (export_statement,
    *  decorated_definition) — extraction lifts through them. */
   liftParents: ReadonlySet<string>;
-  /** Is this line, sitting directly above an item, attached trivia? */
+  /** Is this line, sitting directly above an item, attached trivia? An
+   *  attribute followed by code on the same line is not: that line is an item. */
   isTriviaLine(line: string): boolean;
+  /** Does this line open an attribute or decorator that closes on a later
+   *  line (`#[cfg(any(`)? The trivia walk reads such a block as one line. */
+  opensTrivia(line: string): boolean;
   /** Function-shaped node types the create walk can disclose. Empty set =
    *  create steps land whole-symbol instead of walking. */
   functionTypes: ReadonlySet<string>;
@@ -85,6 +89,192 @@ const trailingBlockArg = (node: SyntaxNode, depth = 0): SyntaxNode | null => {
   return last ? trailingBlockArg(last, depth + 1) : null;
 };
 
+// Where a string literal starting at `t[i]` ends: the index after its closing
+// quote, null when it runs past the end of `t`, undefined when no string starts
+// at `i`. Each language has its own literal forms, so each brings its own.
+type StringEnd = (t: string, i: number) => number | null | undefined;
+
+const quoted = (t: string, from: number, quote: string, escapes: boolean): number | null => {
+  for (let i = from; i < t.length; i++) {
+    if (escapes && t[i] === "\\") i++;
+    else if (t[i] === quote) return i + 1;
+  }
+  return null;
+};
+
+const charLiteral = (t: string, i: number): number | undefined => {
+  const m = /^'(?:\\.[^']*|[^\\'])'/.exec(t.slice(i));
+  return m ? i + m[0].length : undefined;
+};
+
+// `"..."`, `b"..."`, raw `r#"..."#` (no escapes, ends at the quote and the same
+// number of hashes), char literals. A bare `'` is a lifetime, not a quote.
+const rustStringEnd: StringEnd = (t, i) => {
+  const raw = /^b?r(#*)"/.exec(t.slice(i));
+  if (raw && (i === 0 || !/[\w]/.test(t[i - 1]))) {
+    const close = t.indexOf(`"${raw[1]}`, i + raw[0].length);
+    return close < 0 ? null : close + 1 + raw[1].length;
+  }
+  if (t[i] === '"') return quoted(t, i + 1, '"', true);
+  if (t[i] === "'") return charLiteral(t, i);
+  return undefined;
+};
+
+// `"..."`, verbatim `@"..."` (no escapes, `""` is a quote), char literals.
+const csharpStringEnd: StringEnd = (t, i) => {
+  const verbatim = /^(?:\$@|@\$|@)"/.exec(t.slice(i));
+  if (verbatim) {
+    for (let k = i + verbatim[0].length; k < t.length; k++) {
+      if (t[k] !== '"') continue;
+      if (t[k + 1] === '"') k++;
+      else return k + 1;
+    }
+    return null;
+  }
+  if (t[i] === '"') return quoted(t, i + 1, '"', true);
+  if (t[i] === "'") return charLiteral(t, i);
+  return undefined;
+};
+
+// `"..."`, `'...'`, template literals, regex literals. A template with a
+// `${` substitution, or an unclosed regex, can nest anything: the scan gives up
+// (null), which reads as an attribute still open, the safe answer.
+const scriptStringEnd: StringEnd = (t, i) => {
+  if (t[i] === '"' || t[i] === "'") return quoted(t, i + 1, t[i], true);
+  if (t[i] === "`") {
+    const end = quoted(t, i + 1, "`", true);
+    return end === null || t.slice(i, end).includes("${") ? null : end;
+  }
+  if (t[i] === "/" && t[i + 1] !== "/" && t[i + 1] !== "*" && /[(,=:[!&|?{};]$/.test(t.slice(0, i).trimEnd())) {
+    let inClass = false;
+    for (let k = i + 1; k < t.length; k++) {
+      if (t[k] === "\\") k++;
+      else if (t[k] === "[") inClass = true;
+      else if (t[k] === "]") inClass = false;
+      else if (t[k] === "/" && !inClass) return k + 1;
+      else if (t[k] === "\n") return null;
+    }
+    return null;
+  }
+  return undefined;
+};
+
+const OPENERS = "[({";
+const CLOSERS = "])}";
+
+// The text after the bracket group that opens at `t[open]`, or null when the
+// group does not close in `t` (a multi-line attribute). Brackets inside string
+// literals and line comments do not count.
+const afterGroup = (t: string, open: number, stringEnd: StringEnd, lineComment = "//"): string | null => {
+  let depth = 0;
+  for (let i = open; i < t.length; i++) {
+    if (t.startsWith(lineComment, i)) {
+      const eol = t.indexOf("\n", i);
+      if (eol < 0) return null;
+      i = eol;
+      continue;
+    }
+    const end = stringEnd(t, i);
+    if (end === null) return null;
+    if (end !== undefined) {
+      i = end - 1;
+      continue;
+    }
+    if (OPENERS.includes(t[i])) depth++;
+    else if (CLOSERS.includes(t[i]) && --depth === 0) return t.slice(i + 1);
+  }
+  return null;
+};
+
+// `@expr`: a dotted name with any calls, index groups and type arguments
+// (`@a.b`, `@Dec<T>()`, `@a()()`, `@(x.y)`). The text after it, null when a
+// group runs past the end of `t`.
+const afterDecorator = (t: string, stringEnd: StringEnd, lineComment = "//"): string | null => {
+  let i = 1;
+  while (i < t.length) {
+    if (OPENERS.includes(t[i])) {
+      const rest = afterGroup(t, i, stringEnd, lineComment);
+      if (rest === null) return null;
+      i = t.length - rest.length;
+    } else if (t[i] === "<") {
+      let depth = 0;
+      for (; i < t.length; i++) {
+        const end = stringEnd(t, i);
+        if (end === null) return null;
+        if (end !== undefined) i = end - 1;
+        else if (t[i] === "<") depth++;
+        else if (t[i] === ">" && t[i - 1] !== "=" && --depth === 0) break;
+      }
+      if (i >= t.length) return null;
+      i++;
+    } else if (/[\w$.!?]/.test(t[i])) i++;
+    else break;
+  }
+  return t.slice(i);
+};
+
+// An attribute or decorator line is trivia only when nothing but more trivia
+// follows it on the same line. `#[inline] pub fn get(self) -> u64 { self.0 }`
+// is a whole item, and treating it as trivia lets the walk above an item
+// swallow every one-liner sibling. A group still open at the end of the line
+// is the first line of a multi-line attribute: trivia.
+const attributeOnly = (rest: string | null, isTrivia: (t: string) => boolean): boolean =>
+  rest === null || rest.trim() === "" || isTrivia(rest.trim());
+
+// `//` and `* ` continuation lines are comments (`*p = 1;` is a statement). `/* .. */` is trivia when it
+// runs past the line or only trivia follows it (`/* a */ fn helper() {}` is an
+// item).
+const commentTrivia = (t: string, isTrivia: (t: string) => boolean): boolean | undefined => {
+  if (t.startsWith("//") || /^\*(?!\/)(\s|$)/.test(t)) return true;
+  if (!t.startsWith("/*")) return t.startsWith("*/") ? attributeOnly(t.slice(2), isTrivia) : undefined;
+  const close = t.indexOf("*/", 2);
+  return attributeOnly(close < 0 ? null : t.slice(close + 2), isTrivia);
+};
+
+const rustTrivia = (t: string): boolean => {
+  const comment = commentTrivia(t, rustTrivia);
+  if (comment !== undefined) return comment;
+  if (t.startsWith("#[")) return attributeOnly(afterGroup(t, 1, rustStringEnd), rustTrivia);
+  if (t.startsWith("#![")) return attributeOnly(afterGroup(t, 2, rustStringEnd), rustTrivia);
+  return false;
+};
+
+const csharpTrivia = (t: string): boolean => {
+  const comment = commentTrivia(t, csharpTrivia);
+  if (comment !== undefined) return comment;
+  if (t.startsWith("[")) return attributeOnly(afterGroup(t, 0, csharpStringEnd), csharpTrivia);
+  return false;
+};
+
+const tsTrivia = (t: string): boolean => {
+  const comment = commentTrivia(t, tsTrivia);
+  if (comment !== undefined) return comment;
+  if (t.startsWith("@")) return attributeOnly(afterDecorator(t, scriptStringEnd), tsTrivia);
+  return false;
+};
+
+const cssTrivia = (t: string): boolean => commentTrivia(t, cssTrivia) === true;
+
+// `<!-- .. -->` is trivia when it runs past the line or only trivia follows it.
+const htmlTrivia = (t: string): boolean => {
+  if (!t.startsWith("<!--")) return false;
+  const close = t.indexOf("-->", 4);
+  return attributeOnly(close < 0 ? null : t.slice(close + 3), htmlTrivia);
+};
+
+const rustOpens = (t: string): boolean =>
+  (t.startsWith("#[") && afterGroup(t, 1, rustStringEnd) === null) ||
+  (t.startsWith("#![") && afterGroup(t, 2, rustStringEnd) === null);
+const csharpOpens = (t: string): boolean => t.startsWith("[") && afterGroup(t, 0, csharpStringEnd) === null;
+const decoratorOpens = (t: string): boolean => t.startsWith("@") && afterDecorator(t, scriptStringEnd) === null;
+const pythonOpens = (t: string): boolean => t.startsWith("@") && afterDecorator(t, scriptStringEnd, "#") === null;
+
+const pythonTrivia = (t: string): boolean => {
+  if (t.startsWith("#")) return true;
+  if (t.startsWith("@")) return attributeOnly(afterDecorator(t, scriptStringEnd, "#"), pythonTrivia);
+  return false;
+};
+
 const RUST_ITEMS = new Set([
   "function_item",
   "struct_item",
@@ -105,8 +295,8 @@ export const RUST: LanguageSpec = {
   namedItemTypes: RUST_ITEMS,
   nameOf: fieldName,
   liftParents: new Set(),
-  isTriviaLine: (t) =>
-    t.startsWith("//") || t.startsWith("#[") || t.startsWith("#![") || t.startsWith("/*") || t.startsWith("*"),
+  isTriviaLine: rustTrivia,
+  opensTrivia: rustOpens,
   functionTypes: new Set(["function_item"]),
   descendable(child) {
     let node = child;
@@ -164,7 +354,8 @@ export const CSHARP: LanguageSpec = {
   nameOf: fieldName,
   liftParents: new Set(),
   // `[Fact]`-style attributes sit on their own line above the declaration.
-  isTriviaLine: (t) => t.startsWith("//") || t.startsWith("[") || t.startsWith("/*") || t.startsWith("*"),
+  isTriviaLine: csharpTrivia,
+  opensTrivia: csharpOpens,
   functionTypes: new Set(["method_declaration", "constructor_declaration", "local_function_statement"]),
   descendable(child) {
     const BLOCK = new Set(["block"]);
@@ -224,7 +415,8 @@ const tsSpec = (id: LanguageId, pick: (m: { typescript: unknown; tsx: unknown })
   nameOf: fieldName,
   // `export function f` / `export const K`: the export keyword belongs to the item.
   liftParents: new Set(["export_statement", "lexical_declaration", "variable_declaration"]),
-  isTriviaLine: (t) => t.startsWith("//") || t.startsWith("/*") || t.startsWith("*") || t.startsWith("@"),
+  isTriviaLine: tsTrivia,
+  opensTrivia: decoratorOpens,
   functionTypes: new Set(["function_declaration", "method_definition"]),
   descendable(child) {
     const BLOCK = new Set(["statement_block"]);
@@ -262,7 +454,8 @@ export const PYTHON: LanguageSpec = {
   // Decorators live on a wrapping decorated_definition — they are the item's
   // bytes, exactly like Rust attributes.
   liftParents: new Set(["decorated_definition"]),
-  isTriviaLine: (t) => t.startsWith("#") || t.startsWith("@"),
+  isTriviaLine: pythonTrivia,
+  opensTrivia: pythonOpens,
   // Indentation blocks, not braces: the create walk's open-a-shell gesture does
   // not translate. Create steps land whole-symbol.
   functionTypes: new Set(),
@@ -292,6 +485,7 @@ export const MARKDOWN: LanguageSpec = {
   },
   liftParents: new Set(),
   isTriviaLine: () => false,
+  opensTrivia: () => false,
   functionTypes: new Set(),
   descendable: () => null,
   containerBody: () => null,
@@ -324,7 +518,8 @@ export const CSS: LanguageSpec = {
     return text.length > 0 ? text : undefined;
   },
   liftParents: new Set(),
-  isTriviaLine: (t) => t.startsWith("/*") || t.startsWith("*"),
+  isTriviaLine: cssTrivia,
+  opensTrivia: () => false,
   functionTypes: new Set(),
   descendable: () => null,
   // @media / @supports group whole rules — a rule created inside one in the
@@ -365,7 +560,8 @@ export const HTML: LanguageSpec = {
     return HTML_UNIQUE_TAGS.has(tagText) ? tagText : undefined;
   },
   liftParents: new Set(),
-  isTriviaLine: (t) => t.startsWith("<!--"),
+  isTriviaLine: htmlTrivia,
+  opensTrivia: () => false,
   functionTypes: new Set(),
   descendable: () => null,
   containerBody: () => null,

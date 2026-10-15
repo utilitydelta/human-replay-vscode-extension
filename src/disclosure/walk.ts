@@ -237,19 +237,50 @@ export function walkableSource(src: string, spec: LanguageSpec = RUST): boolean 
 // upward line by line from the item, absorbing contiguous trivia lines (the
 // language says what counts), stopping at a blank line (detached) or any code
 // line. Line-based so it needs no sibling API on the minimal SyntaxNode view.
+const MULTI_LINE_TRIVIA_MAX = 40;
+
 export function leadingTriviaStart(src: string, itemStart: number, spec: LanguageSpec = RUST): number {
   const isTrivia = (line: string): boolean => {
     const t = line.trim();
     if (t === "") return false; // blank line → the comment block is detached
     return spec.isTriviaLine(t);
   };
+  // A line that is not trivia alone may close a multi-line attribute
+  // (`#[cfg(any(` ... `))]`). Find the line that opens it (the language says
+  // what opens) and accept the block when, read as one line, it is trivia.
+  // Stops at a blank line, and looks at most MULTI_LINE_TRIVIA_MAX lines up.
+  const multiLineTriviaStart = (lastStart: number, end: number): number | undefined => {
+    let start = lastStart;
+    for (let n = 0; n < MULTI_LINE_TRIVIA_MAX && start > 0; n++) {
+      start = src.lastIndexOf("\n", start - 2) + 1;
+      const line = src.slice(start, src.indexOf("\n", start));
+      if (line.trim() === "") return undefined;
+      if (!spec.opensTrivia(line.trim())) continue;
+      // The block must close where it ends: a group still open there means the
+      // opener was not an attribute (a `#[` line inside a multi-line string).
+      const block = src.slice(start, end).replace(/\r\n/g, "\n").trim();
+      return !spec.opensTrivia(block) && isTrivia(block) ? start : undefined;
+    }
+    return undefined;
+  };
   let result = itemStart;
   let lineStart = src.lastIndexOf("\n", itemStart - 1) + 1; // start of the item's own line
+  // An attribute on the item's own line (`#[inline] pub fn get()`) is also a
+  // preceding sibling, so the node starts after it. It belongs to the item.
+  // Any other prefix (`const ` before a declarator) leaves the start alone.
+  const ownPrefix = src.slice(lineStart, itemStart);
+  if (isTrivia(ownPrefix)) result = lineStart + /^[ \t]*/.exec(ownPrefix)![0].length;
   while (lineStart > 0) {
     const prevLineEnd = lineStart - 1; // the '\n' terminating the previous line
-    const prevLineStart = src.lastIndexOf("\n", prevLineEnd - 1) + 1;
-    const prevLine = src.slice(prevLineStart, prevLineEnd);
-    if (!isTrivia(prevLine)) break;
+    let prevLineStart = src.lastIndexOf("\n", prevLineEnd - 1) + 1;
+    let prevLine = src.slice(prevLineStart, prevLineEnd);
+    if (prevLine.trim() === "") break; // blank line → the comment block is detached
+    if (!isTrivia(prevLine)) {
+      const opener = multiLineTriviaStart(prevLineStart, prevLineEnd);
+      if (opener === undefined) break;
+      prevLineStart = opener;
+      prevLine = src.slice(prevLineStart, prevLineEnd);
+    }
     // The first VISIBLE byte of the trivia line, not the line start: the item's
     // own start already excludes its indent, and a symbol whose leading bytes
     // change shape depending on whether it carries a doc comment makes every
