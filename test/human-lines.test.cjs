@@ -1,8 +1,9 @@
-// Adversarial review of the session-v4 change set, kept as regression oracles.
-// Each test names the claim it checks. Tests marked "DEFECT" name a defect the
-// review found; each one failed before its fix and must stay green.
+// Lines the human types mid-replay are theirs. A re-arm, a resume or the next
+// step works around them when the bytes prove it can, and refuses loud when
+// they don't. Tests named "limit:" pin a documented edge where the replay
+// refuses, or reads a file as landed, rather than guess.
 //
-// Run: node --test test/review-session-v4.test.cjs
+// Run: npm test
 
 const test = require("node:test");
 const assert = require("node:assert");
@@ -11,8 +12,8 @@ const fs = require("fs");
 const esbuild = require("esbuild");
 
 const EXTERNALS = ["tree-sitter", "tree-sitter-rust", "tree-sitter-c-sharp", "tree-sitter-typescript", "tree-sitter-python", "@tree-sitter-grammars/tree-sitter-markdown", "tree-sitter-html", "tree-sitter-css"];
-const entry = path.join(__dirname, ".review-session-v4.entry.ts");
-const bundle = path.join(__dirname, ".review-session-v4.bundle.cjs");
+const entry = path.join(__dirname, ".human-lines.entry.ts");
+const bundle = path.join(__dirname, ".human-lines.bundle.cjs");
 fs.writeFileSync(
   entry,
   `export { planFileWalk, resumeWalk, landedWithAdditions, splitTrailing, leadPlan } from "../src/disclosure/fileWalk";\n` +
@@ -72,12 +73,12 @@ const FILES = [
   { name: "typescript matrix", file: "matrix/matrix-typescript.ts.txt", spec: () => m.TYPESCRIPT },
 ];
 
-// DEFECT 1: the re-arm click (runStepUnguarded on the in-flight step) BEFORE
-// the walk's first accept. runNextSegment already typed lead + tail at EOF;
-// the disclosure cancel leaves those bytes. resumeWalk counts the sep as typed
-// but not the tail, so the re-run types the tail a second time.
+// A re-arm click (runStepUnguarded on the in-flight step) before the walk's
+// first accept. runNextSegment already typed lead + tail at EOF and the
+// disclosure cancel leaves those bytes, so resume must count the tail as typed
+// or the re-run types it twice.
 for (const f of FILES) {
-  test(`DEFECT re-arm at zero accepts (${f.name}): resume + finish reproduces the sandbox file`, () => {
+  test(`re-arm at zero accepts (${f.name}): resume + finish reproduces the sandbox file`, () => {
     const spec = f.spec();
     const sandbox = read(f.file);
     const segs = planFileWalk(sandbox, spec);
@@ -95,10 +96,9 @@ for (const f of FILES) {
   });
 }
 
-// LIMIT (finding 5, deferred as documented): human code BELOW the walk
-// frontier (after the last landed segment) refuses resume when the next
+// Limit: human code BELOW the walk frontier (after the last landed segment) refuses resume when the next
 // segment rides the walk: it can't be told apart from a partial walk build.
-test("LIMIT resumeWalk: a human helper fn below the frontier refuses when the next segment walks", () => {
+test("limit: resumeWalk: a human helper fn below the frontier refuses when the next segment walks", () => {
   const sandbox = read("matrix/matrix-rust.rs");
   const segs = planFileWalk(sandbox, m.RUST);
   assert.ok(segs.length >= 3, "need at least three segments");
@@ -120,11 +120,10 @@ test("resumeWalk: a human helper fn between landed segments resumes at the front
   assert.strictEqual(out.replace(helper, ""), sandbox);
 });
 
-// DEFECT 3 (pre-existing leg order, exposed by the new tolerance): the
-// selfDelta leg ignores foreign edits and runs BEFORE ledgerRange. A human
-// line whose length equals the distance between two equal originalText
-// occurrences makes leg `a` byte-validate on the WRONG occurrence.
-test("DEFECT resolveStep: a foreign line above a non-unique replace lands on the wrong occurrence", () => {
+// A human line whose length equals the distance between two equal
+// originalText occurrences. A selfDelta leg that ignored foreign edits would
+// byte-validate on the wrong occurrence; the ledger must win.
+test("resolveStep: a foreign line above a non-unique replace lands on the right occurrence", () => {
   const before = "fn f() {\n    g(alpha, alpha);\n}";
   const after = "fn f() {\n    g(alpha, omega);\n}";
   const steps = m.buildReplaySteps(before, after, m.RUST);
@@ -142,16 +141,16 @@ test("DEFECT resolveStep: a foreign line above a non-unique replace lands on the
   assert.strictEqual(out.replace(human, ""), after, `wrong merge: ${JSON.stringify(out)}`);
 });
 
-// Evidence for a minor: landedWithAdditions marks a pre-existing foreign file
+// Limit: landedWithAdditions marks a pre-existing foreign file
 // landed as long as it line-contains the sandbox file. resumeWalk's doc says
 // "a foreign file ... undefined"; the landed check never gets that far.
-test("NOTE landedWithAdditions: a foreign file that line-contains a short sandbox file reads as landed", () => {
+test("limit: landedWithAdditions: a foreign file that line-contains a short sandbox file reads as landed", () => {
   const sandbox = "target/\n";
   const foreign = "# someone else's ignore file\nnode_modules/\ntarget/\n*.log\n";
   assert.strictEqual(landedWithAdditions(sandbox, foreign), true);
 });
 
-test("NOTE landedWithAdditions: a body line moved into a different fn still reads as landed", () => {
+test("limit: landedWithAdditions: a body line moved into a different fn still reads as landed", () => {
   const sandbox = "fn f() {\n    a();\n}\n";
   const target = "fn f() {\n}\nfn g() {\n    a();\n}\n";
   assert.strictEqual(landedWithAdditions(sandbox, target), true);
@@ -230,13 +229,12 @@ test("shiftAnchor: multi-change event in pre-change coords, straddle leaves it",
   assert.strictEqual(m.shiftAnchor(10, [{ rangeOffset: 10, rangeLength: 0, textLength: 4 }]), 14);
 });
 
-// DEFECT 4 (regression in controller.noteChange): the anchor is shifted by the
-// WHOLE event first, then the not-diverged loop compares each change's
-// PRE-change rangeOffset against the POST-shift anchor. In a multi-change
-// event (rename symbol, replace-all, format-on-save, multi-cursor paste) a
-// change inside the walked region's first bytes then reads as "above the
-// symbol" and divergence never fires. Calls classifyWalkChanges, the function controller.noteChange now uses.
-test("DEFECT controller.noteChange: an in-region change in a multi-change event is missed after the shift", () => {
+// In a multi-change event (rename symbol, replace-all, format-on-save,
+// multi-cursor paste) each change's PRE-change offset must be compared with
+// the PRE-shift anchor. Otherwise a change inside the walked region's first
+// bytes reads as "above the symbol" and divergence never fires. Calls
+// classifyWalkChanges, which controller.noteChange uses.
+test("controller.noteChange: an in-region change in a multi-change event diverges", () => {
   const anchor = 100;
   // F2 rename `ix` -> `metablock_ix` (+10 bytes): one use above the symbol,
   // one 3 bytes into the walked region.
@@ -278,13 +276,11 @@ function partialWalk(content, spec, j) {
   return { buf, total: steps.length };
 }
 
-// NEW DEFECT A: a re-arm mid-segment (some walk accepts landed) with a human
-// line typed directly above the segment being walked: the incident's shape
-// (TODO above the struct under construction). nextAlreadyHere reads the
-// human's line as the first line, and the partial build holds fewer than half
-// the segment's lines, so resumeWalk resumes and the runner appends the whole
-// segment again below the walk's partial bytes.
-test("DEFECT A resumeWalk: partial walk + human line above it never resumes into a double landing", () => {
+// A re-arm mid-segment (some walk accepts landed) with a human line typed
+// directly above the segment being walked: the recorded incident's shape, a
+// TODO above the struct under construction. Resume must refuse, not append
+// the whole segment again below the walk's partial bytes.
+test("resumeWalk: partial walk + human line above it never resumes into a double landing", () => {
   const spec = m.RUST;
   const segs = planFileWalk(BIG, spec);
   const k = segs.length - 1;
@@ -307,11 +303,10 @@ test("DEFECT A resumeWalk: partial walk + human line above it never resumes into
   assert.deepStrictEqual(bad, [], bad.join("\n----\n"));
 });
 
-// NEW DEFECT B: finding 4's fix skips the selfDelta leg on a foreign entry,
-// but a foreign edit that touched and restored the range (typo, backspace)
-// nulls ledgerRange, and the structural leg is next. A human comment among
-// the call's arguments shifts the named-child path onto the equal neighbour.
-test("DEFECT B resolveStep: typo-and-fix inside the range + comment before it lands on the wrong occurrence", () => {
+// A foreign edit that touched and restored the range (typo, backspace) nulls
+// ledgerRange, and a human comment among the call's arguments would shift the
+// structural leg's named-child path onto the equal neighbour.
+test("resolveStep: typo-and-fix inside the range + comment before it lands on the right occurrence", () => {
   const before = "fn f() {\n    g(alpha, alpha);\n}";
   const after = "fn f() {\n    g(alpha, omega);\n}";
   const steps = m.buildReplaySteps(before, after, m.RUST);
@@ -332,9 +327,9 @@ test("DEFECT B resolveStep: typo-and-fix inside the range + comment before it la
   assert.strictEqual(out.replace(comment, ""), after, `wrong merge: ${JSON.stringify(out)}`);
 });
 
-// LIMIT C (deferred, documented): below the frontier, a human line equal to
+// Limit: below the frontier, a human line equal to
 // a next-segment line refuses resume.
-test("LIMIT C resumeWalk: a human helper below the frontier sharing a line with the next segment refuses", () => {
+test("limit: resumeWalk: a human helper below the frontier sharing a line with the next segment refuses", () => {
   const sandbox = "use std::fmt;\n\nfn one() {\n    a();\n}\n\nfn two() {\n    b();\n}\n";
   const segs = planFileWalk(sandbox, m.RUST);
   assert.strictEqual(segs.length, 3);
@@ -342,7 +337,7 @@ test("LIMIT C resumeWalk: a human helper below the frontier sharing a line with 
   assert.strictEqual(resumeWalk(segs, live, m.RUST), undefined);
 });
 
-test("LIMIT C' resumeWalk: a python helper below the frontier sharing `return None` with the next segment refuses", () => {
+test("limit: resumeWalk: a python helper below the frontier sharing `return None` with the next segment refuses", () => {
   const sandbox = "import os\n\n\ndef one():\n    return 1\n\n\ndef two():\n    return None\n";
   const segs = planFileWalk(sandbox, m.PYTHON);
   assert.strictEqual(segs.length, 3);
@@ -405,15 +400,11 @@ test("blankLineDelta: indentation, trailing space, CRLF and no-final-newline cas
   assert.strictEqual(m.blankLineDelta("a\n  \nb\n", "a\n\nb\n"), undefined, "whitespace-only line changed");
 });
 
-// ======================= loop 3 re-attack =======================
-
-// NEW DEFECT E (A's guard is bypassed through the PREFIX match): the prefix's
-// lines are matched earliest-first, and lines inside the matched prefix are
-// unrestricted. A human trailing comment on the landed segment's closing line
-// (`} // end small`) unmatches it, so the prefix's `}` matches the walk's
-// partial shell `}` BELOW. The partial build is then "inside the prefix",
-// belowFrontierSafe sees nothing, and the runner appends the segment again.
-test("DEFECT E resumeWalk: a comment on the landed `}` + a partial walk below never double-lands", () => {
+// The prefix's lines are matched earliest-first. A human trailing comment on
+// the landed segment's closing line (`} // end small`) unmatches it, so the
+// prefix's `}` could match the walk's partial shell `}` below and hide the
+// partial build inside the prefix. Resume must still refuse.
+test("resumeWalk: a comment on the landed `}` + a partial walk below never double-lands", () => {
   const spec = m.RUST;
   const segs = planFileWalk(BIG, spec);
   const k = segs.length - 1;
@@ -435,11 +426,10 @@ test("DEFECT E resumeWalk: a comment on the landed `}` + a partial walk below ne
   assert.deepStrictEqual(bad, [], bad.join("\n----\n"));
 });
 
-// NEW DEFECT F (B's remaining route, the content leg): the human rewrote the
-// step's own occurrence, so the other equal occurrence is now UNIQUE and
-// resolveByContent claims it. The step that the human took over lands on a
-// neighbour they never touched.
-test("DEFECT F resolveStep: the human rewrites the target occurrence; the content leg moves the step onto the other one", () => {
+// The human rewrote the step's own occurrence, so the other equal occurrence
+// is now unique. The content leg must not claim it: the step was taken over,
+// and a neighbour the human never touched stays as it is.
+test("resolveStep: the human rewrites the target occurrence; the step does not move onto the other one", () => {
   const before = "fn f() {\n    g(alpha, alpha);\n}";
   const after = "fn f() {\n    g(alpha, omega);\n}";
   const steps = m.buildReplaySteps(before, after, m.RUST);
