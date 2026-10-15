@@ -1,5 +1,26 @@
 # Changelog
 
+## 2.5.0
+
+Create one `#[inline]` one-liner in an impl full of them and the replay retyped
+every one-liner above it, then landed the lot ten columns too far right after a
+blank line. Why? A line starting `#[` read as an attribute, even with a whole
+method after it.
+
+- An attribute, decorator or block comment belongs to the item below only when
+  nothing but more of the same follows it on the line. `#[inline] pub fn get()
+  { .. }` is an item. C# had the same bug: `[Ignore] public int X { get; set; }`
+  properties swallowed each other.
+- A symbol keeps its own same-line attribute, and a multi-line attribute
+  (`#[cfg(any(` .. `))]`, `@Component({` .. `})`) attaches whole.
+- A Create lands at its sibling's column, measured from the sibling's
+  attribute, and with the sandbox's own line breaks. No more blank line the
+  sandbox doesn't have.
+
+Old against new extraction over real files in all eight languages: TypeScript,
+TSX, HTML and Markdown unchanged; every Rust and C# change drops a swallowed
+sibling or attaches an attribute. The suite went from 2,086 tests to 2,156.
+
 ## 2.4.0
 
 Type a line of your own mid-replay and the replay used to treat it as drift.
