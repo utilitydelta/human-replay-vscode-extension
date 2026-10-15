@@ -1,5 +1,27 @@
 # Changelog
 
+## 2.6.0
+
+Resume a guide after its delete has landed and the replay could strike the
+wrong item. Celeriant's step 2.21 deletes a free fn `fault`; a later step adds
+`SlotScan::fault`. The file matched the sandbox byte for byte, and the replay
+struck the method anyway. Why? A delete counted as done only when no item
+named `fault` was left, and the method answers to that name.
+
+- A delete is judged by where items sit: their containers plus their name. A
+  free `fault` and `SlotScan::fault` are different items, so the delete reads
+  done and the method is left alone.
+- A kept item that isn't finished yet stays kept: a line you added, or a later
+  modify still to run. So does one whose container header changed (a class
+  gaining a base type, `impl<'a> SlotScan<'a>`).
+- The cursor parks on the item the delete strikes, not the first item with its
+  name. A guide's fenced Before parks on its own bytes and stops if they aren't
+  in the file exactly once.
+- The validator fails a delete followed by a recreate in the same place: fold
+  them into one Modify.
+
+The celeriant guide validates 215/215 with output identical to 2.5.0.
+
 ## 2.5.0
 
 Create one `#[inline]` one-liner in an impl full of them and the replay retyped
