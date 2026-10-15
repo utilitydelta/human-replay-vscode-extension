@@ -31,7 +31,7 @@ const entry = path.join(__dirname, ".validate.entry.ts");
 fs.writeFileSync(
   entry,
   `export { parseGuide } from "../src/disclosure/guide";\n` +
-    `export { extractSymbol, stepAlreadyLanded } from "../src/disclosure/resume";\n` +
+    `export { deleteVerdict, extractSymbol, stepAlreadyLanded } from "../src/disclosure/resume";\n` +
     `export { classifyReplay } from "../src/disclosure/strategy";\n` +
     `export { buildReplaySteps } from "../src/disclosure/sequence";\n` +
     `export { resolveStep } from "../src/disclosure/replay";\n` +
@@ -52,7 +52,7 @@ esbuild.buildSync({
   platform: "node",
   external: ["tree-sitter", "tree-sitter-rust", "tree-sitter-c-sharp", "tree-sitter-typescript", "tree-sitter-python", "@tree-sitter-grammars/tree-sitter-markdown", "tree-sitter-html", "tree-sitter-css"],
 });
-const { parseGuide, extractSymbol, stepAlreadyLanded, classifyReplay, buildReplaySteps, resolveStep, parseRoot, languageForFile, planCreateInsertion, separatorToInsert, splitLeadingPad, walkableSource, countItemsByName, lineDiffSteps, resolveStepNoTree, planFileWalk, splitTrailing, isWeak, isNoneQuestion, gates } =
+const { parseGuide, deleteVerdict, extractSymbol, stepAlreadyLanded, classifyReplay, buildReplaySteps, resolveStep, parseRoot, languageForFile, planCreateInsertion, separatorToInsert, splitLeadingPad, walkableSource, countItemsByName, lineDiffSteps, resolveStepNoTree, planFileWalk, splitTrailing, isWeak, isNoneQuestion, gates } =
   require(bundle);
 const cleanup = () => {
   fs.rmSync(bundle, { force: true });
@@ -312,10 +312,19 @@ for (const step of guide.steps) {
     continue;
   }
 
+  // The runner's own delete verdict. Landed only because the sandbox keeps a
+  // differing item at the same spot means the delete would never run: the
+  // runner can't tell that item from the later step's work in progress.
   if (step.action === "delete") {
-    if (before === undefined) note(step, "landed", "symbol already gone from the target");
+    const verdict = step.before === undefined ? deleteVerdict(targetText, sandboxText, step.symbol, spec) : undefined;
+    const strike = step.before ?? (verdict.landed ? undefined : verdict.strike);
+    if (verdict?.bySpot) {
+      failures.push(step.id);
+      note(step, "FAIL", `reads landed before it runs: the sandbox keeps a "${step.symbol}" in the same place — fold this delete and the later step into one Modify`);
+    } else if (strike === undefined) note(step, "landed", "symbol already gone from the target");
     else {
-      simulated.set(rel, spliceBytes(targetText, before, ""));
+      const at = verdict && !verdict.landed ? verdict.at : targetText.indexOf(strike);
+      simulated.set(rel, at < 0 ? targetText : targetText.slice(0, at) + targetText.slice(at + strike.length));
       note(step, "ok", "strikes the existing symbol");
     }
     continue;

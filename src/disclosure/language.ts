@@ -45,6 +45,10 @@ export interface LanguageSpec {
    *  whose symbol is nested in one of these in the sandbox must land inside the
    *  matching container in the target, never at end-of-file. */
   containerBody(node: SyntaxNode): SyntaxNode | null;
+  /** A container's identity across target and sandbox, for a container with
+   *  no name field (a Rust impl). Absent or undefined: a named container is
+   *  known by kind and name, any other by its header text. */
+  containerIdentity?(node: SyntaxNode, src: string): string | undefined;
   /** Conventional indent the create walk lays blocks out with. The walk assumes
    *  the sandbox follows the language convention; byte-exactness holds when it
    *  does. */
@@ -330,6 +334,18 @@ export const RUST: LanguageSpec = {
       default:
         return null;
     }
+  },
+  // `impl SlotScan` and `impl<'a> SlotScan<'a>` are one impl: generics are
+  // header detail a later step or the human may change. A trait impl keeps
+  // its own identity.
+  containerIdentity(node, src) {
+    if (node.type !== "impl_item") return undefined;
+    const base = (field: string): string => {
+      let n = node.childForFieldName(field);
+      if (n?.type === "generic_type") n = n.childForFieldName("type");
+      return n ? src.slice(n.startIndex, n.endIndex) : "";
+    };
+    return `impl:${base("trait")}:${base("type")}`;
   },
 };
 

@@ -107,7 +107,7 @@ function lineEnd(text: string, i: number): number {
 // A container's header for cross-file matching: bytes from its start to its body,
 // whitespace-normalized so a wrapped header still matches. Exact-equality beyond
 // that — a header that drifted between sandbox and target is a real conflict.
-function headerOf(text: string, container: SyntaxNode, body: SyntaxNode): string {
+export function headerOf(text: string, container: SyntaxNode, body: SyntaxNode): string {
   return text.slice(container.startIndex, body.startIndex).replace(/\s+/g, " ").trim();
 }
 

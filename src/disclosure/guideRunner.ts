@@ -13,7 +13,7 @@ import { Retrospective, gates } from "../retrospective/retrospective";
 import { PendingGate, RetroGate, gateKey } from "../retrospective/gate";
 import { DwellGate } from "./dwell";
 import { ProgramCounter, StepStatus } from "./programCounter";
-import { extractSymbol, stepAlreadyLanded } from "./resume";
+import { deleteVerdict, extractSymbol, stepAlreadyLanded } from "./resume";
 import { LanguageSpec, languageForFile } from "./language";
 
 export { StepStatus };
@@ -814,6 +814,18 @@ export class GuideRunner {
       const wholeFile = step.action === "create-file" || step.action === "patch";
       const spec = languageForFile(rel);
       if (!wholeFile && !spec) return;
+      if (step.action === "delete") {
+        const targetText = this.readFileFromDisk(path.join(workspaceRoot, rel));
+        const sandboxText = sandbox ? this.readFileFromDisk(path.join(sandbox, rel)) : undefined;
+        const verdict = deleteVerdict(targetText, sandboxText, step.symbol, spec!);
+        if (verdict.landed) {
+          this.pc.markDone(i);
+          landed++;
+          this.output.appendLine(`[guide] step ${step.id} already landed (no \`${step.symbol}\` the sandbox lacks) — marked done`);
+          if (verdict.bySpot) this.logKeptBySpot(step);
+        }
+        return;
+      }
       const read = (root: string) =>
         wholeFile
           ? this.readFileFromDisk(path.join(root, rel))
@@ -916,6 +928,25 @@ export class GuideRunner {
 
     if (spec) {
       const text = doc.getText();
+      // A delete parks where its strike starts (the strike runs from the
+      // cursor), which need not be the first item with its name. A fenced
+      // Before is its own bytes: they must sit in the target exactly once.
+      // Landed: nothing to park on, fall to the neutral EOF.
+      if (step.action === "delete") {
+        if (step.before === undefined) {
+          const verdict = deleteVerdict(text, this.readSandboxFile(step), step.symbol, spec);
+          return doc.positionAt(verdict.landed ? text.length : verdict.at);
+        }
+        const at = text.indexOf(step.before);
+        const count = at < 0 ? 0 : text.indexOf(step.before, at + 1) < 0 ? 1 : 2;
+        if (count !== 1) {
+          const why = count === 0 ? "aren't in" : "appear more than once in";
+          vscode.window.showWarningMessage(`Human Replay: step ${step.id} can't place its delete: the guide's Before bytes ${why} ${step.file}.`);
+          this.output.appendLine(`[guide] step ${step.id}: delete blocked — fenced Before bytes ${why} the target`);
+          return undefined;
+        }
+        return doc.positionAt(at);
+      }
       const node = findItemByName(parseRoot(text, spec) as unknown as SyntaxNode, text, step.symbol, spec);
       if (node) return doc.positionAt(leadingTriviaStart(text, node.startIndex, spec));
 
@@ -976,6 +1007,7 @@ export class GuideRunner {
     let before: string | undefined;
     if (step.action !== "create") {
       if (step.before !== undefined) before = step.before;
+      else if (step.action === "delete") before = this.deleteStrike(step, editor.document.getText(), spec);
       else {
         const text = editor.document.getText();
         this.warnIfAmbiguous(step, text, spec, "target");
@@ -1004,6 +1036,7 @@ export class GuideRunner {
     if (!wholeFile && !spec) return undefined;
     const live = this.readLiveFile(rel);
     if (live === undefined) return step.action === "delete" ? undefined : false;
+    if (step.action === "delete") return deleteVerdict(live, this.readSandboxFile(step), step.symbol, spec!).landed;
     const target = wholeFile ? live : this.symbolFrom(live, step.symbol, spec!);
     // A skeleton create-file is landed while the target still begins with it —
     // later symbol steps grow the file past the skeleton.
@@ -1011,7 +1044,7 @@ export class GuideRunner {
       return target !== undefined && target.startsWith(step.after);
     }
     const after = wholeFile ? this.readSandboxFile(step) : (step.after ?? this.readSandboxSymbol(step, spec!));
-    if (after === undefined && step.action !== "delete") return undefined;
+    if (after === undefined) return undefined;
     return stepAlreadyLanded(step.action, target, after);
   }
 
@@ -1042,6 +1075,35 @@ export class GuideRunner {
     }
     await this.parkCursor(doc, pos);
     this.output.appendLine(`[gate] step ${step.id} open code — ${rel}:${pos.line + 1}`);
+  }
+
+  // The bytes a delete strikes: the item named `step.symbol` that the sandbox
+  // doesn't hold. Several such items is the same coin flip warnIfAmbiguous
+  // reports, narrowed to the items that can be the deleted one.
+  private deleteStrike(step: ReplayStep, text: string, spec: LanguageSpec): string | undefined {
+    const verdict = deleteVerdict(text, this.readSandboxFile(step), step.symbol, spec);
+    if (verdict.landed) {
+      if (verdict.bySpot) this.logKeptBySpot(step);
+      return undefined;
+    }
+    if (verdict.candidates > 1) {
+      this.output.appendLine(
+        `[guide] step ${step.id}: \`${step.symbol}\` names ${verdict.candidates} items in ${step.file} the sandbox lacks — striking the FIRST; check it is the one you meant`,
+      );
+      vscode.window.showWarningMessage(
+        `Human Replay: step ${step.id} — \`${step.symbol}\` names ${verdict.candidates} items the sandbox lacks. The replay strikes the first one.`,
+      );
+    }
+    return verdict.strike;
+  }
+
+  // A delete that reads landed while an item it could name still sits at the
+  // spot, differing from the sandbox, is either the later step's work in
+  // progress or a guide shape the validator fails. Say which item stayed.
+  private logKeptBySpot(step: ReplayStep): void {
+    this.output.appendLine(
+      `[guide] step ${step.id}: kept a \`${step.symbol}\` that differs from the sandbox because the sandbox keeps one in the same place — a later step finishes it`,
+    );
   }
 
   private symbolFrom(text: string, symbol: string, spec: LanguageSpec): string | undefined {
