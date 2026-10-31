@@ -1,5 +1,64 @@
 # Changelog
 
+## 3.0.0
+
+A guide of 20 phases and several hundred steps doesn't get replayed in one
+sitting. Units of 30 to 60 minutes do. So every phase is now a replay unit with
+a budget, and the validator refuses a phase that blows it, before the human
+finds out an hour in.
+
+That makes this a breaking release: a guide that passed under 2.6.0 can fail
+under 3.0.0 without a byte of it changing.
+
+- Unit budget: 25 steps, 150 typed lines, 4 new types per phase. Over budget
+  fails with "Split it". The validator prints a units section after the steps
+  and the final PASS needs both.
+- A phase can declare `**Unit:**` (`component`, `closing`, `delta`, or the older
+  `contract` / `internals` split), plus `**Module:**` and `**Shells:**`. The
+  declared kind adds its order checks: outside-in for a component, red tests
+  before the bodies that turn them green.
+- Tests ride with the code they test. A phase of tests alone fails; a phase of
+  code with no test warns. Steps can name `**Red:**` and `**Green:**` tests.
+- `**Shells:** no-throw` is for code that bans panics: a `todo!()` shell in that
+  unit fails, and an `Unbuilt` placeholder still in the tree after the last
+  step fails too.
+
+Three new step actions that type nothing:
+
+- `read` shows code beside the editor, read-only: the caller view a unit builds
+  against, or a contract page. From the step's `**Shows:**` fence, else the
+  sandbox, else the target. Tab continues.
+- `comment` pauses in a file you just typed so you write your own comments, with
+  the guide's drafted stage table beside it.
+- `rule` recaps a decision and waits for you to pick an option by name. The
+  guide can recommend one; it is never preselected. A rule with fewer than two
+  options, a repeated option, or a recommendation off the list fails the parse.
+
+What the replay writes down:
+
+- `rulings.jsonl` gets one line per pick, `unit-times.jsonl` gets start and
+  stop per unit (and each comment pause, with whether you changed the file).
+  Every line carries who and when.
+- The default folder is `.replay-record/` in the workspace being replayed into,
+  never the sandbox, which gets deleted. `humanReplay.recordDir` moves it. The
+  folder ships a `.gitattributes` asking for a union merge, so a team replaying
+  in parallel commits its lines without conflicts.
+- The extension records a pick. What the pick means is the project's call.
+
+Resume and restart:
+
+- Read, comment and rule steps leave no bytes, so their done marks come back
+  from the record folder, else the saved position, and only behind typed work
+  the files show landed.
+- `git checkout` keeps untracked files, so a reverted tree can still hold a
+  file the guide creates later. Resume now spots typed work past a step that
+  hasn't landed and offers Restart from step 1.
+- New command: Restart Replay from Step 1. Forgets the saved position and
+  re-derives typed steps from your files.
+
+Two validators running at once no longer delete each other's bundle. The suite
+runs 2,260 tests; `replay-units.test.cjs` adds 34 of them.
+
 ## 2.6.0
 
 Resume a guide after its delete has landed and the replay could strike the

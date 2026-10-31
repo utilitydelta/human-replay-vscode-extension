@@ -2,7 +2,7 @@
   "name": "human-replay",
   "displayName": "Human Replay",
   "description": "Replay sandboxed AI work into your real branch one Tab at a time. Guide-driven and model-free.",
-  "version": "2.6.0",
+  "version": "3.0.0",
   "publisher": "utilitydelta",
   "license": "Apache-2.0",
   "icon": "media/icon.png",
@@ -41,6 +41,11 @@
       {
         "command": "humanReplay.endReplay",
         "title": "End Replay Session",
+        "category": "Human Replay"
+      },
+      {
+        "command": "humanReplay.restartReplay",
+        "title": "Restart Replay from Step 1 (after reverting the tree)",
         "category": "Human Replay"
       },
       {
@@ -132,6 +137,11 @@
       {
         "command": "humanReplay.runNextStep",
         "key": "tab",
+        "when": "editorTextFocus && humanReplay.readOrRuleActive && !suggestWidgetVisible && !inlineSuggestionVisible"
+      },
+      {
+        "command": "humanReplay.runNextStep",
+        "key": "tab",
         "when": "editorTextFocus && humanReplay.gateActive && !suggestWidgetVisible && !inlineSuggestionVisible"
       },
       {
@@ -202,6 +212,11 @@
           "type": "string",
           "default": "",
           "description": "Folder containing agent sandboxes, offered by Start Replay. Empty defaults to ~/sandbox."
+        },
+        "humanReplay.recordDir": {
+          "type": "string",
+          "default": "",
+          "description": "Folder the replay appends rulings.jsonl (decisions picked by name) and unit-times.jsonl (start and stop per unit) to. Empty writes to .replay-record/ in the workspace being replayed into, never the sandbox, which gets deleted."
         }
       }
     }

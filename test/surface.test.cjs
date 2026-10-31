@@ -83,6 +83,7 @@ const KEPT_CONFIG = [
   "humanReplay.dwellSeconds",
   "humanReplay.gateLockoutSeconds",
   "humanReplay.guidePath",
+  "humanReplay.recordDir",
   "humanReplay.sandboxParent",
   "humanReplay.sandboxRoot",
 ];

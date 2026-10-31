@@ -70,8 +70,15 @@ A change that violates one of these is drift, not a feature.
   `guide.ts` (parser, steps + phase checkpoints), `guideRunner.ts` (program
   counter + routing + resume + phase-boundary pause and the checkpoint it
   surfaces there), `resume.ts`, `programCounter.ts`, `guideTree.ts`.
-- `src/` — the extension entry (`extension.ts`) and `ghostProvider.ts`, the
-  inline-completion surface both engines render their ghosts through.
+  Replay units: `unitBudget.ts` (the per-phase budget and the outside-in,
+  closing and red/green order checks the validator runs) and
+  `replayRecord.ts` (the `rulings.jsonl` and `unit-times.jsonl` lines and
+  the unit clock). Steps that type nothing (`read`, `comment`, `rule`) run
+  in `guideRunner.ts` through the `PauseHost` that `src/pauseSurface.ts`
+  draws: a read-only view beside the editor and the ruling picker.
+- `src/` — the extension entry (`extension.ts`), `ghostProvider.ts`, the
+  inline-completion surface both engines render their ghosts through, and
+  `pauseSurface.ts`.
 - `test/*.test.cjs` — headless oracles, parameterized over corpora, each naming
   the invariant it proves. `test/corpus/` ships the recorded live-incident
   bytes (the `sync` symbol pair + the 175-byte foreign ghost) that

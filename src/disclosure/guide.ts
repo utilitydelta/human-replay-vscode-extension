@@ -23,7 +23,28 @@ import { Invariant, RetroChoice, Retrospective } from "../retrospective/retrospe
 // instead embeds an After fence carrying only the file's SKELETON (header,
 // usings, frame); the remaining symbols arrive as ordinary create steps, each
 // with its own Why and retrospective.
-export type StepAction = "create" | "modify" | "delete" | "create-file" | "patch";
+//
+// Three actions type nothing. "read" shows code the human reads but does not
+// type: the caller view of an outside-in unit, or a contract page. "comment"
+// pauses for the human to write their own comments in a file they just typed,
+// with the guide's drafted stage table shown beside it. "rule" prints a
+// decision recap and waits for the human to pick an option by name.
+export type StepAction = "create" | "modify" | "delete" | "create-file" | "patch" | "read" | "comment" | "rule";
+
+/** Actions that land bytes in the target. The rest pause the replay. */
+export function typesBytes(action: StepAction): boolean {
+  return action !== "read" && action !== "comment" && action !== "rule";
+}
+
+/** A `rule` step's ballot: the decision it rules and the names the human picks from. */
+export interface Ruling {
+  /** The id of the call being ruled: the project's own (e.g. "ADR-012") or a slug the guide makes up. */
+  decision: string;
+  /** The names the human picks from, in guide order: "yes | no", "A | B". */
+  options: string[];
+  /** The option the guide recommends, when it names one. Never preselected. */
+  recommend: string | undefined;
+}
 
 export interface ReplayStep {
   /** Step id from the heading, e.g. "1.1". The program counter indexes the array. */
@@ -50,6 +71,37 @@ export interface ReplayStep {
    *  gate's "open the guide here" lands on the step and not the top of a
    *  thousand-line file. */
   line: number;
+  /** Tests this step expects red when it lands (a test step written against shells). */
+  red: string[];
+  /** Tests this step turns green (an internals step). */
+  green: string[];
+  /** Present on a `rule` step only. */
+  ruling?: Ruling;
+}
+
+/** What a unit delivers. A component unit builds one component outside in and
+ *  ends green: types, shells, red tests, the caller view, then the bodies that
+ *  turn the tests green, all in one phase. `contract` and `internals` are the
+ *  older split of that across two phases, which leaves a phase ending red.
+ *  A closing unit revisits a module the human already typed; a delta unit
+ *  carries a change to code already replayed. */
+export type UnitKind = "component" | "contract" | "internals" | "closing" | "delta";
+
+/** A phase that declares `**Unit:**` under its heading. Every phase is a replay
+ *  unit to the validator's budget; the declared kind adds the order checks. */
+export interface ReplayUnit {
+  /** The `## Phase N: ...` heading. */
+  phase: string;
+  line: number;
+  kind: UnitKind;
+  /** The one module the unit builds, from `**Module:**`, when declared. */
+  module: string | undefined;
+  /** How its shells answer before the internals land, from `**Shells:**`.
+   *  `throw` (the default): the language's own not-implemented marker
+   *  (`todo!()`, `throw new NotImplementedException()`, `raise
+   *  NotImplementedError`). `no-throw`: for code that bans panics, an empty
+   *  answer, a named refusal, or a temporary `Unbuilt`. */
+  shells: "throw" | "no-throw";
 }
 
 // A phase's closing `### CHECKPOINT: ...` block. The replay already stops at
@@ -81,6 +133,8 @@ export interface ReplayGuide {
   /** Phase checkpoints, keyed by the phase heading they close. Empty when the
    *  guide writes none — a checkpoint is optional, a step is not. */
   checkpoints: PhaseCheckpoint[];
+  /** Phases that declared a `**Unit:**` kind, in guide order. */
+  units: ReplayUnit[];
 }
 
 const FIELD = /^\*\*([^*]+):\*\*\s?(.*)$/; // **Label:** value
@@ -145,7 +199,9 @@ function parseFields(lines: string[], eol: string): FieldBag {
       if (label === "before") {
         codeTarget = "before";
         lastLabel = null;
-      } else if (label === "after") {
+      } else if (label === "after" || label === "shows") {
+        // `**Shows:**` is the same fence under the name a read or comment step
+        // means: code to read, or the drafted stage table beside a comment pause.
         codeTarget = "after";
         lastLabel = null;
       } else {
@@ -275,6 +331,43 @@ function parseChoices(lines: string[], stepId: string): RetroChoice[] {
   return [...choices.filter((c) => c.correct), ...choices.filter((c) => !c.correct)];
 }
 
+function parseUnitKind(raw: string, phase: string): UnitKind {
+  const kind = raw.replace(/`/g, "").trim().toLowerCase();
+  if (kind === "component" || kind === "contract" || kind === "internals" || kind === "closing" || kind === "delta") return kind;
+  throw new Error(`replay guide: "${phase}" declares unknown **Unit:** "${raw}" — component, closing or delta (or contract, internals)`);
+}
+
+/** A comma-separated name list, backticks stripped: `**Red:** \`a\`, b`. */
+function nameList(raw: string | undefined): string[] {
+  return (raw ?? "")
+    .split(",")
+    .map((n) => n.replace(/`/g, "").trim())
+    .filter((n) => n.length > 0);
+}
+
+// A rule step that cannot be ruled is a guide bug the human would meet as a
+// picker with one row, or a recommendation that is not on it.
+function parseRuling(fields: Map<string, string>, stepId: string): Ruling {
+  const decision = (fields.get("decision") ?? "").replace(/`/g, "").trim();
+  if (!decision) throw new Error(`replay guide: rule step ${stepId} has no **Decision:**`);
+  const options = (fields.get("options") ?? "")
+    .split("|")
+    .map((o) => o.trim())
+    .filter((o) => o.length > 0);
+  if (options.length < 2) {
+    throw new Error(`replay guide: rule step ${stepId} needs at least two **Options:** separated by "|"`);
+  }
+  if (new Set(options.map((o) => o.toLowerCase())).size !== options.length) {
+    throw new Error(`replay guide: rule step ${stepId} repeats an option — a pick must name exactly one`);
+  }
+  const rawRecommend = fields.get("recommend")?.trim();
+  const recommend = rawRecommend ? options.find((o) => o.toLowerCase() === rawRecommend.toLowerCase()) : undefined;
+  if (rawRecommend && recommend === undefined) {
+    throw new Error(`replay guide: rule step ${stepId} recommends "${rawRecommend}", which is not one of its options`);
+  }
+  return { decision, options, recommend };
+}
+
 function parseAction(raw: string | undefined): StepAction {
   switch ((raw ?? "").trim().toLowerCase()) {
     case "create":
@@ -288,6 +381,12 @@ function parseAction(raw: string | undefined): StepAction {
       return "create-file";
     case "patch":
       return "patch";
+    case "read":
+      return "read";
+    case "comment":
+      return "comment";
+    case "rule":
+      return "rule";
     default:
       throw new Error(`replay guide: step has unknown or missing **Action:** "${raw ?? ""}"`);
   }
@@ -402,10 +501,18 @@ export function parseGuide(md: string): ReplayGuide {
 
   const steps: ReplayStep[] = [];
   const checkpoints: PhaseCheckpoint[] = [];
+  const units: ReplayUnit[] = [];
   let currentPhase: string | undefined;
   for (const s of sections) {
     if (s.level === 2 && /^Phase\b/i.test(s.title)) {
       currentPhase = s.title;
+      const phaseFields = parseFields(s.body, eol).fields;
+      const unit = phaseFields.get("unit");
+      if (unit !== undefined) {
+        const module = phaseFields.get("module")?.replace(/`/g, "").trim();
+        const shells = /no-?throw/i.test(phaseFields.get("shells") ?? "") ? "no-throw" : "throw";
+        units.push({ phase: s.title, line: s.line, kind: parseUnitKind(unit, s.title), module: module || undefined, shells });
+      }
       continue;
     }
     if (CHECKPOINT_HEADING.test(s.title)) {
@@ -438,11 +545,20 @@ export function parseGuide(md: string): ReplayGuide {
     // `before` from the target workspace and `after` from the sandbox). So a missing
     // fence is not a parse error; it just means "resolve from files", and that needs
     // a File. A create-file step always resolves from the sandbox file.
+    const ruling = action === "rule" ? parseRuling(bag.fields, id) : undefined;
+
+    // A rule step reads no file. A read step can carry its code as a fence (a
+    // caller kept outside both trees); a comment step always names its file.
     const missingFence =
-      action === "create-file" ||
-      action === "patch" ||
-      (action !== "create" && bag.before === undefined) ||
-      (action !== "delete" && bag.after === undefined);
+      action === "rule"
+        ? false
+        : action === "read"
+          ? bag.after === undefined
+          : action === "comment" ||
+            action === "create-file" ||
+            action === "patch" ||
+            (action !== "create" && bag.before === undefined) ||
+            (action !== "delete" && bag.after === undefined);
     if (missingFence && !file) {
       throw new Error(`replay guide: step ${id} (${action}) has no Before/After fence and no **File:** to resolve bytes from`);
     }
@@ -452,7 +568,8 @@ export function parseGuide(md: string): ReplayGuide {
     // naturally.
     const symbol =
       (bag.fields.get("symbol") ?? "").replace(/^`|`$/g, "").trim() ||
-      (action === "create-file" || action === "patch" ? file.split(":")[0] : "");
+      (action === "rule" ? (ruling?.decision ?? "") : "") ||
+      (action === "create-file" || action === "patch" || action === "read" || action === "comment" ? file.split(":")[0] : "");
     if (!symbol) throw new Error(`replay guide: step ${id} missing **Symbol:**`);
 
     // Resolve referenced invariants from the declared set. A dangling reference
@@ -488,9 +605,12 @@ export function parseGuide(md: string): ReplayGuide {
       before: bag.before,
       after: bag.after,
       line: s.line,
+      red: nameList(bag.fields.get("red")),
+      green: nameList(bag.fields.get("green")),
+      ...(ruling ? { ruling } : {}),
     });
   }
 
   if (steps.length === 0) throw new Error("replay guide: no `### Step N.M:` steps found");
-  return { feature, invariants: [...invMap.values()], steps, checkpoints };
+  return { feature, invariants: [...invMap.values()], steps, checkpoints, units };
 }

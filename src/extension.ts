@@ -11,6 +11,9 @@ import { GuideTreeProvider } from "./disclosure/guideTree";
 import { surfaceRetrospective } from "./retrospective/surface";
 import { GateQuickPick } from "./retrospective/gateSurface";
 import { PendingGate } from "./retrospective/gate";
+import { ReplayPauseSurface } from "./pauseSurface";
+import { recordedPauseDone } from "./disclosure/replayRecord";
+import { typesBytes } from "./disclosure/guide";
 
 // Every line carries a wall clock. Without it the channel says what happened
 // and in what order, but never WHERE THE TIME WENT — and "it feels slow between
@@ -240,6 +243,23 @@ export function activate(context: vscode.ExtensionContext) {
       guideStatus.show();
       return;
     }
+    // A read, comment or rule step holds the replay until the human acts.
+    const held = guideRunner.pausedPauseStep;
+    if (held) {
+      guideStatus.text =
+        held.action === "rule"
+          ? `$(law) rule ${held.ruling?.decision} by name to continue`
+          : held.action === "comment"
+            ? `$(edit) step ${held.id}: write your comments, then click here`
+            : `$(eye) step ${held.id}: read, then Tab`;
+      guideStatus.tooltip =
+        held.action === "rule"
+          ? `Step ${held.id}: pick an option by name. Click here (or run the next step) to bring the picker back.`
+          : `Step ${held.id} types nothing. Click here (or run the next step) when you are done.`;
+      guideStatus.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
+      guideStatus.show();
+      return;
+    }
     // A phase pause must be impossible to miss AFTER the toast is gone: the
     // status bar goes prominent and stays that way until the human continues.
     const paused = guideRunner.pausedPhase;
@@ -395,6 +415,19 @@ export function activate(context: vscode.ExtensionContext) {
   });
   context.subscriptions.push({ dispose: () => gatePicker.dispose() });
   guideRunner.setGateHost(gatePicker);
+  // Read, comment and rule steps, and the record files the project reads back:
+  // rulings.jsonl and unit-times.jsonl, in the workspace's .replay-record/ unless
+  // humanReplay.recordDir says otherwise.
+  const pauseSurface = new ReplayPauseSurface(output, () => {
+    const configured = vscode.workspace.getConfiguration("humanReplay").get<string>("recordDir", "").trim();
+    if (configured) return configured.replace(/^~(?=$|\/)/, os.homedir());
+    // Default: the repo being replayed into, which outlives the sandbox the
+    // guide came from. Committed with it, the union merge keeps a team's lines.
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    return root ? path.join(root, ".replay-record") : undefined;
+  });
+  context.subscriptions.push(pauseSurface.register(), { dispose: () => pauseSurface.dispose() });
+  guideRunner.setPauseHost(pauseSurface);
   guideRunner.setChangeHandler(() => {
     guideTree.refresh();
     updateGuideStatus();
@@ -411,6 +444,11 @@ export function activate(context: vscode.ExtensionContext) {
     // instead of indenting, which is the whole point of a gate the human can Esc
     // out of. Inside the picker itself Tab never reaches the editor at all.
     void vscode.commands.executeCommand("setContext", "humanReplay.gateActive", guideRunner.gateStep !== undefined);
+    // A read or rule step has nothing to type, so Tab continues (read) or
+    // brings the picker back (rule). A comment step leaves Tab to the human:
+    // they are writing in the file.
+    const held = guideRunner.pausedPauseStep;
+    void vscode.commands.executeCommand("setContext", "humanReplay.readOrRuleActive", held !== undefined && held.action !== "comment");
     // Same reason as the patch pause: while the replay holds, no engine surface
     // is armed, so without this key Tab would fall through to the editor's
     // indent and type bytes into the code the human is reading.
@@ -507,7 +545,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Load a guide and pick up where the last session stopped: restore the saved
   // position, then re-derive done-ness from the real bytes on both sides.
-  const loadGuideFrom = async (uri: vscode.Uri): Promise<boolean> => {
+  const loadGuideFrom = async (uri: vscode.Uri, fresh = false): Promise<boolean> => {
     const md = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString("utf8");
     // Read the saved position BEFORE load(): load fires changed() → persistPosition,
     // and with the key still current a RE-load would clobber its own save with the
@@ -523,21 +561,68 @@ export function activate(context: vscode.ExtensionContext) {
     // A gate the human never answered re-arms across a reload, even though the
     // bytes below will read its step as done — the door was shut when the window
     // went away, so it is shut when the window comes back.
-    if (saved?.skipped?.length || saved?.gate) guideRunner.restore({ skipped: saved.skipped, gate: saved.gate });
+    // A read, comment or rule step leaves no bytes behind, so its done mark is
+    // the one done mark the snapshot restores, and only behind typed work the
+    // files show landed. A tree reverted past it brings it back to pending.
     const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     const derived = root ? guideRunner.deriveLanded(root) : 0;
+    const lastLanded = guide.steps.reduce(
+      (at, step, i) => (typesBytes(step.action) && guideRunner.status(i) === "done" ? i : at),
+      -1,
+    );
+    // The record folder is the ground truth for steps that type nothing: a
+    // ruling picked or a comment pause closed is a line there. Without a record
+    // (no folder yet), fall back to the saved marks behind typed work. A restart
+    // (`fresh`) ignores both.
+    const typedDone = guide.steps.flatMap((step, i) => (typesBytes(step.action) && guideRunner.status(i) === "done" ? [i] : []));
+    // Typed work landed past a typed step that has not: the tree holds files
+    // from a later run. A revert with `git checkout` keeps untracked files, so
+    // a file the guide creates survives it and reads as landed.
+    const firstPending = guide.steps.findIndex((step, i) => typesBytes(step.action) && guideRunner.status(i) !== "done");
+    const ahead = firstPending < 0 ? [] : typedDone.filter((i) => i > firstPending);
+    if (ahead.length > 0) {
+      const files = [...new Set(ahead.map((i) => guide.steps[i].file.split(":")[0]))].join(", ");
+      output.appendLine(`[guide] ${ahead.length} step(s) read as landed ahead of step ${guide.steps[firstPending].id}: ${files}`);
+      void vscode.window.showWarningMessage(
+        `Human Replay: ${ahead.length} later step(s) read as already landed, ahead of step ${guide.steps[firstPending].id}, from ${files}. ` +
+          "Left over from another run? git checkout keeps untracked files; git clean -fd removes them.",
+      );
+    }
+    const rulings = pauseSurface.readRecord("rulings.jsonl");
+    const units = pauseSurface.readRecord("unit-times.jsonl");
+    const pauseDone = fresh
+      ? []
+      : rulings !== undefined || units !== undefined
+        ? recordedPauseDone(guide.steps, guide.feature, pauseSurface.author(), rulings, units, typedDone)
+        : (saved?.done ?? []).filter((i) => {
+            const step = guide.steps[i];
+            return step !== undefined && !typesBytes(step.action) && i < lastLanded;
+          });
+    if (saved?.skipped?.length || saved?.gate || pauseDone.length) {
+      guideRunner.restore({ skipped: saved?.skipped, gate: saved?.gate, done: pauseDone });
+    }
     updateGuideStatus();
     // The tree is the replay's control surface — show it the moment a guide
     // loads, or the human never learns it exists. The first step's editor
     // takes keyboard focus right after; the panel stays visible beside it.
     void vscode.commands.executeCommand("humanReplay.guideSteps.focus");
     const done = guide.steps.length - guideRunner.steps.filter((_, i) => guideRunner.status(i) === "pending" || guideRunner.status(i) === "current").length;
-    vscode.window.showInformationMessage(
-      done > 0
-        ? `Human Replay: resumed "${guide.feature}" at step ${Math.min(guideRunner.counter + 1, guide.steps.length)}/${guide.steps.length}` +
-            (derived > 0 ? ` (${derived} step(s) already landed in the target)` : "")
-        : `Human Replay: loaded "${guide.feature}" — ${guide.steps.length} steps.`,
-    );
+    if (done > 0) {
+      // A resume can be a surprise after reverting the tree: read, comment and
+      // rule steps keep their marks, so offer the way back to step 1 here.
+      const restart = "Restart from step 1";
+      void vscode.window
+        .showInformationMessage(
+          `Human Replay: resumed "${guide.feature}" at step ${Math.min(guideRunner.counter + 1, guide.steps.length)}/${guide.steps.length}` +
+            (derived > 0 ? ` (${derived} step(s) already landed in the target)` : ""),
+          restart,
+        )
+        .then((choice) => {
+          if (choice === restart) void vscode.commands.executeCommand("humanReplay.restartReplay");
+        });
+    } else {
+      vscode.window.showInformationMessage(`Human Replay: loaded "${guide.feature}" — ${guide.steps.length} steps.`);
+    }
     return true;
   };
 
@@ -569,28 +654,58 @@ export function activate(context: vscode.ExtensionContext) {
       }
 
       const last = context.workspaceState.get<{ sandbox: string; guide: string }>("humanReplay.lastReplay");
-      type SandboxItem = vscode.QuickPickItem & { full?: string };
-      const items: SandboxItem[] = dirs.map((d) => ({
-        label: d.name,
-        description: d.full === last?.sandbox ? "last replay" : undefined,
-        detail: fs.existsSync(path.join(d.full, "session", "replay-guide.md"))
+      // Sandboxes picked with Browse live anywhere; they are remembered across
+      // workspaces so the next Start Replay offers them without a setting.
+      const RECENT = "humanReplay.recentSandboxes";
+      const recent = (context.globalState.get<string[]>(RECENT) ?? []).filter((p) => fs.existsSync(p));
+      const listed = new Set(dirs.map((d) => d.full));
+      const elsewhere = [...new Set([...(last && !listed.has(last.sandbox) ? [last.sandbox] : []), ...recent])].filter(
+        (p) => !listed.has(p) && fs.existsSync(p),
+      );
+      const guideNote = (full: string) =>
+        fs.existsSync(path.join(full, "session", "replay-guide.md"))
           ? "has session/replay-guide.md"
-          : fs.existsSync(path.join(d.full, "replay-guides"))
+          : fs.existsSync(path.join(full, "replay-guides"))
             ? "has replay-guides/"
-            : undefined,
-        full: d.full,
+            : undefined;
+      type SandboxItem = vscode.QuickPickItem & { full?: string; browse?: boolean };
+      const items: SandboxItem[] = [
+        ...dirs.map((d) => ({ label: d.name, full: d.full })),
+        ...elsewhere.map((full) => ({ label: path.basename(full), full })),
+      ].map((d) => ({
+        ...d,
+        description: d.full === last?.sandbox ? "last replay" : listed.has(d.full) ? undefined : path.dirname(d.full),
+        detail: guideNote(d.full),
       }));
       // The sandbox being resumed is almost always the one you want — pin it first.
-      items.sort((a, b) => (a.description ? -1 : 0) - (b.description ? -1 : 0));
+      items.sort((a, b) => (a.full === last?.sandbox ? -1 : 0) - (b.full === last?.sandbox ? -1 : 0));
+      items.push({
+        label: "$(folder-opened) Browse…",
+        detail: "Pick any folder as the sandbox for this replay; it is remembered for next time",
+        browse: true,
+      });
       items.push({
         label: "$(file-code) No sandbox — self-contained guide",
         detail: "A guide with embedded Before/After bytes (workspace session/replay-guide.md, replay-guides/, or humanReplay.guidePath)",
       });
-      const sandboxPick = await vscode.window.showQuickPick(items, {
+      let sandboxPick = await vscode.window.showQuickPick(items, {
         title: "Human Replay: replay from which sandbox?",
         placeHolder: "The sandbox holding the agent's finished work (the After bytes)",
       });
       if (!sandboxPick) return;
+      if (sandboxPick.browse) {
+        const chosen = await vscode.window.showOpenDialog({
+          canSelectFolders: true,
+          canSelectFiles: false,
+          canSelectMany: false,
+          openLabel: "Replay from this sandbox",
+          defaultUri: vscode.Uri.file(last?.sandbox ? path.dirname(last.sandbox) : os.homedir()),
+        });
+        if (!chosen?.[0]) return;
+        const full = chosen[0].fsPath;
+        await context.globalState.update(RECENT, [full, ...recent.filter((p) => p !== full)].slice(0, 8));
+        sandboxPick = { label: path.basename(full), full };
+      }
       guideRunner.setSandboxRoot(sandboxPick.full);
       output.appendLine(`[replay] sandbox: ${sandboxPick.full ?? "(none — self-contained guide)"}`);
 
@@ -646,6 +761,28 @@ export function activate(context: vscode.ExtensionContext) {
           guide: guidePick.fsPath,
         });
       }
+      await guideRunner.runCurrent();
+      updateGuideStatus();
+    }),
+  );
+
+  // Reverting the tree resets typed steps (they re-derive from bytes) but not
+  // read, comment and rule steps, whose done marks live only in workspaceState.
+  // Restart forgets the saved position and reloads, so the replay starts at 1.
+  context.subscriptions.push(
+    vscode.commands.registerCommand("humanReplay.restartReplay", async () => {
+      const uri = currentGuideUri;
+      if (!uri || !guideRunner.loaded) {
+        vscode.window.showInformationMessage("Human Replay: no replay to restart. Run Start Replay first.");
+        return;
+      }
+      disclosure.cancel();
+      orchestrator.cancelAll();
+      guideRunner.cancelInFlight();
+      await context.workspaceState.update(positionKey(uri), undefined);
+      await loadGuideFrom(uri, true);
+      updateGuideStatus();
+      vscode.window.setStatusBarMessage("Human Replay: restarted from step 1; typed steps re-derived from your files", 4000);
       await guideRunner.runCurrent();
       updateGuideStatus();
     }),

@@ -26,11 +26,14 @@ if (!guidePath || !targetRoot || !sandboxRoot) {
   process.exit(2);
 }
 
-const bundle = path.join(__dirname, ".validate.bundle.cjs");
-const entry = path.join(__dirname, ".validate.entry.ts");
+// Per process: two validators running at once (the test suite runs oracle
+// files in parallel) must not delete each other's bundle.
+const bundle = path.join(__dirname, `.validate.${process.pid}.bundle.cjs`);
+const entry = path.join(__dirname, `.validate.${process.pid}.entry.ts`);
 fs.writeFileSync(
   entry,
-  `export { parseGuide } from "../src/disclosure/guide";\n` +
+  `export { parseGuide, typesBytes } from "../src/disclosure/guide";\n` +
+    `export { UNIT_BUDGET, measureUnit, overBudget, shellPanics, unitOrderProblems, redGreenProblems, unbuiltSurvivors, testPlacement } from "../src/disclosure/unitBudget";\n` +
     `export { deleteVerdict, extractSymbol, stepAlreadyLanded } from "../src/disclosure/resume";\n` +
     `export { classifyReplay } from "../src/disclosure/strategy";\n` +
     `export { buildReplaySteps } from "../src/disclosure/sequence";\n` +
@@ -52,7 +55,7 @@ esbuild.buildSync({
   platform: "node",
   external: ["tree-sitter", "tree-sitter-rust", "tree-sitter-c-sharp", "tree-sitter-typescript", "tree-sitter-python", "@tree-sitter-grammars/tree-sitter-markdown", "tree-sitter-html", "tree-sitter-css"],
 });
-const { parseGuide, deleteVerdict, extractSymbol, stepAlreadyLanded, classifyReplay, buildReplaySteps, resolveStep, parseRoot, languageForFile, planCreateInsertion, separatorToInsert, splitLeadingPad, walkableSource, countItemsByName, lineDiffSteps, resolveStepNoTree, planFileWalk, splitTrailing, isWeak, isNoneQuestion, gates } =
+const { parseGuide, typesBytes, UNIT_BUDGET, measureUnit, overBudget, shellPanics, unitOrderProblems, redGreenProblems, unbuiltSurvivors, testPlacement, deleteVerdict, extractSymbol, stepAlreadyLanded, classifyReplay, buildReplaySteps, resolveStep, parseRoot, languageForFile, planCreateInsertion, separatorToInsert, splitLeadingPad, walkableSource, countItemsByName, lineDiffSteps, resolveStepNoTree, planFileWalk, splitTrailing, isWeak, isNoneQuestion, gates } =
   require(bundle);
 const cleanup = () => {
   fs.rmSync(bundle, { force: true });
@@ -197,10 +200,42 @@ const spliceBytes = (text, from, to) => {
   return at < 0 ? text : text.slice(0, at) + to + text.slice(at + from.length);
 };
 
-for (const step of guide.steps) {
+// One step of the sequential dry-run. Returns early on every verdict.
+const validateStep = (step) => {
   const rel = step.file.split(":")[0];
   const targetText = targetTextFor(rel);
   const sandboxText = read(path.join(sandboxRoot, rel));
+
+  // Steps that type nothing. They land no bytes, so the dry-run tree is
+  // untouched; what they need is something to show or a file to pause in.
+  if (step.action === "rule") {
+    const r = step.ruling;
+    note(step, "ok", `rule ${r.decision}: ${r.options.join(" | ")}${r.recommend ? ` (recommends ${r.recommend})` : ""}`);
+    return;
+  }
+  if (step.action === "read") {
+    // The runner's order: the step's fence, else the sandbox, else the target.
+    const wholeFile = step.symbol === rel;
+    const spec = languageForFile(rel);
+    const shown =
+      step.after ??
+      [sandboxText, targetText]
+        .filter((t) => t !== undefined)
+        .map((t) => (wholeFile ? t : spec ? extractSymbol(t, step.symbol, spec) : undefined))
+        .find((t) => t !== undefined);
+    if (shown === undefined) {
+      failures.push(step.id);
+      note(step, "FAIL", `nothing to show — ${wholeFile ? rel : `\`${step.symbol}\``} not found in the sandbox or the target`);
+    } else note(step, "ok", `read only, ${shown.split("\n").length} line(s) shown`);
+    return;
+  }
+  if (step.action === "comment") {
+    if (targetText === undefined) {
+      failures.push(step.id);
+      note(step, "FAIL", `comment pause on ${rel}, which the target does not have at this step`);
+    } else note(step, "ok", `comment pause${step.after !== undefined ? ", stage table shown beside" : ""}`);
+    return;
+  }
 
   // Every action but create-file edits a file that has to already be there. A
   // fenced step carries its own Before bytes, so the missing file used to slip
@@ -210,7 +245,7 @@ for (const step of guide.steps) {
   if (step.action !== "create-file" && targetText === undefined) {
     failures.push(step.id);
     note(step, "FAIL", `target file ${rel} unreadable — check the targetRoot argument`);
-    continue;
+    return;
   }
 
   // Whole-file steps address the file, not a name, so there is nothing to be
@@ -258,7 +293,7 @@ for (const step of guide.steps) {
         note(step, "ok", `${bytes.length} bytes${skeleton ? " (skeleton)" : ""}, ${segs.length} segment(s) (${walks} walk, ${segs.length - walks} block)`);
       }
     }
-    continue;
+    return;
   }
 
   if (step.action === "patch") {
@@ -293,14 +328,14 @@ for (const step of guide.steps) {
         note(step, "ok", `${hunks.length} hunk(s), sequential byte-exact`);
       }
     }
-    continue;
+    return;
   }
 
   const spec = languageForFile(rel);
   if (!spec) {
     failures.push(step.id);
     note(step, "FAIL", `no language support for ${rel} — route to Manual steps or Create File`);
-    continue;
+    return;
   }
   const before = step.before ?? (targetText === undefined ? undefined : extractSymbol(targetText, step.symbol, spec));
   const after = step.after ?? (sandboxText === undefined ? undefined : extractSymbol(sandboxText, step.symbol, spec));
@@ -309,7 +344,7 @@ for (const step of guide.steps) {
   if (dupT > 1 || dupS > 1) {
     failures.push(step.id);
     note(step, "FAIL", `"${step.symbol}" defined ${Math.max(dupT, dupS)}x in ${rel} — first-match would resolve wrong`);
-    continue;
+    return;
   }
 
   // The runner's own delete verdict. Landed only because the sandbox keeps a
@@ -327,12 +362,12 @@ for (const step of guide.steps) {
       simulated.set(rel, at < 0 ? targetText : targetText.slice(0, at) + targetText.slice(at + strike.length));
       note(step, "ok", "strikes the existing symbol");
     }
-    continue;
+    return;
   }
   if (after === undefined) {
     failures.push(step.id);
     note(step, "FAIL", `symbol not found in sandbox ${rel}`);
-    continue;
+    return;
   }
   if (step.action === "create") {
     if (stepAlreadyLanded("create", before, after)) {
@@ -364,17 +399,17 @@ for (const step of guide.steps) {
         note(step, "ok", `${after.length} bytes, ${surface} at end of file`);
       }
     }
-    continue;
+    return;
   }
   // modify
   if (before === undefined) {
     failures.push(step.id);
     note(step, "FAIL", `symbol not found in target ${rel}`);
-    continue;
+    return;
   }
   if (stepAlreadyLanded("modify", before, after)) {
     note(step, "landed", "already byte-identical in the target");
-    continue;
+    return;
   }
   const plan = classifyReplay(before, after, spec);
   const seq = sequentialReplay(before, after, spec);
@@ -385,6 +420,22 @@ for (const step of guide.steps) {
     simulated.set(rel, spliceBytes(targetText, before, after));
     note(step, "ok", `${plan.strategy} (survival ${Math.round(plan.survival * 100)}%, ${seq.ops} ops${plan.strategy === "surgical" ? ", sequential byte-exact" : ""})`);
   }
+};
+
+// Per-step cost for the unit budget: the non-blank lines each step adds to its
+// file in the dry-run, measured with the same line diff a Patch step serves.
+const costs = [];
+const addedLines = (pre, post) =>
+  pre === post
+    ? []
+    : lineDiffSteps(pre ?? "", post ?? "")
+        .flatMap((h) => h.replacement.split("\n"))
+        .filter((l) => l.trim() !== "");
+for (const step of guide.steps) {
+  const rel = step.file.split(":")[0];
+  const pre = typesBytes(step.action) ? targetTextFor(rel) : undefined;
+  validateStep(step);
+  costs.push({ step, addedLines: typesBytes(step.action) ? addedLines(pre, targetTextFor(rel)) : [] });
 }
 
 // Completeness: every file this guide creates must end byte-identical to the
@@ -399,6 +450,56 @@ for (const rel of createdFiles) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// The unit audit. Every phase is a replay unit and gets the budget; a phase
+// that declares its **Unit:** kind also gets that kind's order checks.
+const unitFailures = [];
+let unitWarnings = 0;
+const unitNote = (status, label, detail) => {
+  if (status === "FAIL") unitFailures.push(label);
+  if (status === "WARN") unitWarnings++;
+  console.log(`  ${status.padEnd(9)} ${label} — ${detail}`);
+};
+console.log(
+  `\nunits (budget: ${UNIT_BUDGET.maxSteps} steps, ${UNIT_BUDGET.maxTypedLines} typed lines, ${UNIT_BUDGET.maxNewTypes} new types):`,
+);
+const phases = [...new Set(guide.steps.map((s) => s.phase ?? "Steps"))];
+for (const phase of phases) {
+  const unit = guide.units.find((u) => u.phase === phase);
+  const unitCosts = costs.filter((c) => (c.step.phase ?? "Steps") === phase);
+  const m = measureUnit(phase, unit?.module, unitCosts);
+  const over = overBudget(m);
+  const label = `${phase}${unit ? ` (${unit.kind})` : ""}`;
+  if (over.length > 0) unitNote("FAIL", label, `over budget: ${over.join("; ")}. Split it`);
+  else unitNote("ok", label, `${m.steps} steps, ${m.typedLines} typed lines, ${m.newTypes.length} new types`);
+  if (m.outsideModule.length > 0) {
+    unitNote("WARN", phase, `typed files outside **Module:** ${unit.module}: ${m.outsideModule.join(", ")}`);
+  }
+  const placement = testPlacement(unitCosts.map((c) => c.step));
+  if (placement.testsOnly) {
+    unitNote("FAIL", phase, "tests only: tests land in the phase that adds the code they test, not in a trailing test phase");
+  }
+  if (placement.untested) unitNote("WARN", phase, "adds code and no test: the phase's commit proves nothing about it");
+  if (!unit) continue;
+  const order = unitOrderProblems(unit, unitCosts.map((c) => c.step));
+  for (const e of order.errors) unitNote("FAIL", phase, e);
+  for (const w of order.warnings) unitNote("WARN", phase, w);
+  // Only a unit that declares `**Shells:** no-throw` (code that bans panics)
+  // refuses the language's not-implemented marker; everywhere else it is the
+  // idiomatic shell.
+  if ((unit.kind === "contract" || unit.kind === "component") && unit.shells === "no-throw") {
+    for (const p of shellPanics(unitCosts)) {
+      unitNote("FAIL", phase, `step ${p.step} shell panics in a no-throw unit: \`${p.line}\` — return the empty answer, a named refusal, or \`Unbuilt\``);
+    }
+  }
+}
+const redGreen = redGreenProblems(guide.steps);
+for (const e of redGreen.errors) unitNote("FAIL", "red/green", e);
+for (const w of redGreen.warnings) unitNote("WARN", "red/green", w);
+for (const file of unbuiltSurvivors(simulated)) {
+  unitNote("FAIL", file, "still names `Unbuilt` after the last step: the internals step that fills the last body removes it");
+}
+
 cleanup();
 console.log(
   `\nambiguous symbol names: ${ambiguous}${ambiguous ? " (WARN above — the replay takes the first match on both sides)" : ""}`,
@@ -410,5 +511,11 @@ console.log(
 // A step can fail twice (its answer key AND its bytes); the human counts steps,
 // not failure reasons.
 const failed = [...new Set(failures)];
-console.log(`${failed.length === 0 ? "PASS" : "FAIL"}: ${guide.steps.length - failed.length}/${guide.steps.length} steps validate${failed.length ? ` — fix: ${failed.join(", ")}` : ""}`);
-process.exit(failed.length === 0 ? 0 : 1);
+const unitsFailed = [...new Set(unitFailures)];
+console.log(`units: ${phases.length} checked, ${unitsFailed.length} refused, ${unitWarnings} warning(s)`);
+const pass = failed.length === 0 && unitsFailed.length === 0;
+console.log(
+  `${pass ? "PASS" : "FAIL"}: ${guide.steps.length - failed.length}/${guide.steps.length} steps validate` +
+    `${failed.length ? ` — fix: ${failed.join(", ")}` : ""}${unitsFailed.length ? `; units refused: ${unitsFailed.join(", ")}` : ""}`,
+);
+process.exit(pass ? 0 : 1);

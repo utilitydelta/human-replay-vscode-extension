@@ -1,7 +1,8 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
-import { PhaseCheckpoint, ReplayGuide, ReplayStep, parseGuide } from "./guide";
+import { PhaseCheckpoint, ReplayGuide, ReplayStep, parseGuide, typesBytes } from "./guide";
+import { RulingRecord, StopReason, UnitClock, UnitEvent, jsonLine } from "./replayRecord";
 import { DisclosureController } from "./controller";
 import { ReplayOrchestrator } from "./orchestrator";
 import { parseRoot } from "./diff";
@@ -27,6 +28,44 @@ export interface RetroGateHost {
   show(gate: RetroGate, step: ReplayStep): void;
   /** Tear the picker down without passing the gate (skip, cancel, unload). */
   hide(): void;
+}
+
+/** The surfaces a step that types nothing renders through (read, comment,
+ *  rule) and the files the replay records into. Injected like the gate host,
+ *  so the runner stays testable headless. */
+const FENCE_LANG: Record<string, string> = { ".rs": "rust", ".ts": "ts", ".tsx": "tsx", ".js": "js", ".cs": "csharp", ".py": "python", ".go": "go" };
+
+/** A read step's page: what to look at and why, the code, and how to move on. */
+export function readPage(step: { id: string; title: string; why: string; file: string }, code: string): string {
+  const lang = FENCE_LANG[path.extname(step.file.split(":")[0]).toLowerCase()] ?? "";
+  return [
+    `# Step ${step.id}: ${step.title}`,
+    "",
+    step.why.trim(),
+    "",
+    "```" + lang,
+    code.replace(/\n+$/, ""),
+    "```",
+    "",
+    "Read only. Press Tab to continue.",
+    "",
+  ].join("\n");
+}
+
+export interface PauseHost {
+  /** Show code read-only beside the editor: a caller view, a contract page, a
+   *  drafted stage table. `file` names the language for highlighting. */
+  showCode(title: string, text: string, file: string, focus?: boolean): void;
+  /** Ask the human to pick one of a rule step's options by name. Idempotent:
+   *  every run gesture while the ruling stands calls it again. */
+  showRuling(step: ReplayStep, pick: (choice: string) => void): void;
+  hideRuling(): void;
+  /** Close the read-only views a pause opened, once the pause is over. */
+  closeViews?(): void;
+  /** Who is replaying, stamped on every record line. */
+  author?(): string;
+  /** Append one JSON line to the named record file in the record folder. */
+  record(file: "rulings.jsonl" | "unit-times.jsonl", line: string): void;
 }
 
 // Drives a loaded replay guide: holds the parsed guide and the program counter
@@ -92,6 +131,14 @@ export class GuideRunner {
     },
   );
   private gateHost: RetroGateHost | undefined;
+  private pauseHost: PauseHost | undefined;
+  // A read, comment or rule step in flight: nothing to type, so the step is
+  // done when the human says so (Continue) or picks (rule). A comment step
+  // keeps the file's bytes from when the pause began, to record whether the
+  // human wrote anything.
+  private pausedStep: { index: number; file?: string; snapshot?: string } | undefined;
+  // Start and stop per unit, for steps per hour. Built per loaded guide.
+  private clock: UnitClock | undefined;
   // A create-file step's walk in flight: the segment plan and the position in
   // it. Each segment is one engine run (walk or block ghost); completeCurrent
   // chains the next until the plan is spent, then the step itself completes.
@@ -125,6 +172,10 @@ export class GuideRunner {
    *  and the vscode-coupled surface stays one file (gateSurface.ts). */
   setGateHost(host: RetroGateHost): void {
     this.gateHost = host;
+  }
+
+  setPauseHost(host: PauseHost): void {
+    this.pauseHost = host;
   }
 
   /** How the ungated step's retrospective reaches the human: one toast with a
@@ -161,6 +212,7 @@ export class GuideRunner {
       this.flowInto(i);
       return;
     }
+    if (this.pausedStep?.index === i) this.clearPause();
     this.pc.skip(i);
     if (wasInFlight) {
       this.disclosure.cancel();
@@ -183,6 +235,7 @@ export class GuideRunner {
    *  human's back. The step keeps its status for a re-run. */
   cancelInFlight(): void {
     this.fileWalk = undefined;
+    this.clearPause();
     this.clearGate("replay cancelled");
     if (this.pc.cancelInFlight()) this.changed();
   }
@@ -469,13 +522,13 @@ export class GuideRunner {
     this.flowInto(from);
   }
 
-  /** Esc: the picker goes away, the gate does not. The status bar keeps saying
-   *  so and the next run gesture brings it back with the same order. */
+  /** Esc: the human passes on the question. The gate drops and the replay
+   *  flows on as a pass would; asking again after an Esc reads as nagging. */
   dismissGate(): void {
     const p = this.pendingGate;
     if (!p) return;
-    this.output.appendLine(`[gate] step ${this.guide?.steps[p.index]?.id ?? p.index} dismissed — re-arms on the next run gesture`);
-    this.changed();
+    this.clearGate("passed on with Esc");
+    this.flowInto(p.index);
   }
 
   /** Drop the gate entirely: the step was skipped, the session cancelled, or the
@@ -558,6 +611,7 @@ export class GuideRunner {
         // makes silence here the worst place for it: the human reads "complete"
         // and closes the panel with the bench unrun.
         const last = this.guide?.steps[this.steps.length - 1];
+        this.stopClock("unit-complete");
         const check = this.checkpointFor(last?.phase);
         const head = check?.tasks[0];
         this.pausedCheck = head ? check : undefined;
@@ -577,6 +631,7 @@ export class GuideRunner {
     if (from && to && from.phase !== to.phase) {
       const done = from.phase ?? "steps";
       const check = this.checkpointFor(from.phase);
+      this.stopClock("unit-complete");
       this.output.appendLine(`[guide] ${done} complete — paused before ${to.phase ?? "the next steps"}`);
       if (check) this.output.appendLine(`[guide] checkpoint: ${check.tasks.length} task(s) before the next phase`);
       // The pause needs surfaces that OUTLIVE a toast: the status bar flips to
@@ -720,6 +775,7 @@ export class GuideRunner {
     this.pausedBefore = undefined;
     this.pausedCheck = undefined;
     this.pausedPatch = undefined;
+    this.clearPause();
     this.clearGate("resynced from files");
     const landed = this.deriveLanded(workspaceRoot);
     this.changed();
@@ -731,6 +787,8 @@ export class GuideRunner {
    *  it. Done/skipped marks live in workspaceState and re-derive from bytes on
    *  the next load — ending a session never loses position. */
   unload(): void {
+    this.stopClock("session-ended");
+    this.clearPause();
     this.fileWalk = undefined;
     this.clearGate("replay session ended");
     this.pausedBefore = undefined;
@@ -748,6 +806,9 @@ export class GuideRunner {
     // A gate standing over the OLD guide indexes steps that no longer exist.
     // The saved snapshot re-arms it by step id if this is the same guide.
     this.clearGate("a different guide loaded");
+    this.clearPause();
+    this.stopClock("session-ended");
+    this.clock = new UnitClock(guide.feature, () => Date.now());
     this.guide = guide;
     this.pc.reset(guide.steps.length);
     this.changed();
@@ -807,6 +868,9 @@ export class GuideRunner {
     let landed = 0;
     this.steps.forEach((step, i) => {
       if (this.pc.status(i) === "done" || this.pc.status(i) === "skipped") return;
+      // A read, comment or rule step leaves no bytes to derive from. Its done
+      // mark comes back from the saved position instead.
+      if (!typesBytes(step.action)) return;
       const rel = step.file.split(":")[0];
       // A whole-file step (create-file, patch) compares whole files; symbol
       // steps compare the named item in the file's language. No language, no
@@ -1029,7 +1093,7 @@ export class GuideRunner {
   // unreadable file) — the caller must not treat that as "gone".
   private stepStillLanded(index: number): boolean | undefined {
     const step = this.guide?.steps[index];
-    if (!step) return undefined;
+    if (!step || !typesBytes(step.action)) return undefined;
     const rel = step.file.split(":")[0];
     const wholeFile = step.action === "create-file" || step.action === "patch";
     const spec = languageForFile(rel);
@@ -1465,6 +1529,12 @@ export class GuideRunner {
     // UNCONDITIONALLY: an Esc (cancelDisclosure) or a skip already cleared
     // in-flight, but its restore edit may still be airborne.
     await this.orchestrator.settleRestore();
+    if (this.pausedStep !== undefined) this.clearPause();
+    this.enterUnit(step);
+    if (!typesBytes(step.action)) {
+      await this.runPause(index, step);
+      return;
+    }
     if (step.action === "create-file") {
       await this.runCreateFile(index, step, wasMidFileWalk);
       return;
@@ -1567,9 +1637,185 @@ export class GuideRunner {
     }
   }
 
+  // A step that types nothing. Read shows code beside the editor; comment opens
+  // the file the human just typed with the drafted stage table beside it; rule
+  // asks for a pick by name. All three hold the replay until the human acts:
+  // Continue for read and comment, a pick for rule.
+  private async runPause(index: number, step: ReplayStep): Promise<void> {
+    this.pc.begin(index);
+    this.changed();
+    this.output.appendLine(`[guide] step ${step.id} (${index + 1}/${this.steps.length}) ${step.action} ${step.symbol}`);
+    if (step.action === "rule") {
+      this.pausedStep = { index };
+      this.changed(); // arms the Tab binding for the pause
+      this.showRuling(index);
+      return;
+    }
+    if (step.action === "read") {
+      const text = this.readViewText(step);
+      if (text === undefined) {
+        this.output.appendLine(`[guide] step ${step.id}: nothing to show — \`${step.symbol}\` not found in the sandbox or the target ${step.file}`);
+        vscode.window.showWarningMessage(`Human Replay: step ${step.id} found no code to show at its File and Symbol.`);
+        if (this.pc.block()) this.changed();
+        return;
+      }
+      this.pausedStep = { index };
+      this.changed();
+      this.pauseHost?.showCode(`${step.id} ${step.title}`, readPage(step, text), `step ${step.id}.md`, true);
+      // The page takes focus so Tab, bound to editor focus, continues from it;
+      // it is read-only, so a stray key types nothing.
+      void vscode.window.setStatusBarMessage("Human Replay: Tab to continue", 4000);
+      return;
+    }
+    const rel = step.file.split(":")[0];
+    const uris = rel ? await vscode.workspace.findFiles(rel) : [];
+    if (uris.length === 0) {
+      vscode.window.showWarningMessage(`Human Replay: step ${step.id}: ${rel} is not in the workspace.`);
+      if (this.pc.block()) this.changed();
+      return;
+    }
+    const doc = await vscode.workspace.openTextDocument(uris[0]);
+    await vscode.window.showTextDocument(doc, { preview: false });
+    this.pausedStep = { index, file: rel, snapshot: doc.getText() };
+    this.changed();
+    if (step.after !== undefined) this.pauseHost?.showCode(`${step.id} stage table (draft)`, step.after, "stage-table.md");
+    this.offerContinue(`Write your comments in ${rel}, then continue.`);
+  }
+
+  private offerContinue(message: string): void {
+    void vscode.window.showInformationMessage(`Human Replay: ${message}`, "Continue replay").then((choice) => {
+      if (choice === "Continue replay" && this.pausedStep !== undefined) this.continuePause();
+    });
+  }
+
+  private showRuling(index: number): void {
+    const step = this.guide?.steps[index];
+    if (!step) return;
+    this.pauseHost?.showRuling(step, (choice) => this.pickRuling(index, choice));
+  }
+
+  /** The human picked `choice` on the rule step at `index`. Records the pick
+   *  and moves on. Returns false when no such ruling stands. */
+  pickRuling(index: number, choice: string): boolean {
+    const step = this.guide?.steps[index];
+    const ruling = step?.ruling;
+    if (!step || !ruling || this.pausedStep?.index !== index || !ruling.options.includes(choice)) return false;
+    const record: RulingRecord = {
+      decision: ruling.decision,
+      choice,
+      options: ruling.options,
+      recommended: ruling.recommend ?? null,
+      guide: this.feature ?? "",
+      unit: step.phase ?? null,
+      step: step.id,
+      at: new Date().toISOString(),
+    };
+    this.pauseHost?.record("rulings.jsonl", jsonLine(record, this.pauseHost?.author?.()));
+    this.output.appendLine(`[ruling] ${ruling.decision}: ${choice} (step ${step.id})`);
+    this.finishPause();
+    return true;
+  }
+
+  /** Continue past a read or comment pause; a standing ruling re-shows instead. */
+  continuePause(): void {
+    const paused = this.pausedStep;
+    if (!paused) return;
+    const step = this.guide?.steps[paused.index];
+    if (!step) return;
+    if (step.action === "rule") {
+      this.output.appendLine(`[ruling] ${step.ruling?.decision} re-shown (run gesture while the ruling stands)`);
+      this.showRuling(paused.index);
+      return;
+    }
+    if (step.action === "comment" && paused.file !== undefined) {
+      const changed = this.readLiveFile(paused.file) !== paused.snapshot;
+      this.recordUnit([
+        { event: "comment", unit: step.phase ?? "Steps", guide: this.feature ?? "", at: new Date().toISOString(), step: step.id, file: paused.file, changed },
+      ]);
+      this.output.appendLine(`[guide] step ${step.id}: comment pause ${changed ? "closed with your edits" : "closed with nothing written"} in ${paused.file}`);
+      if (changed) void this.saveStepDoc(paused.index);
+    }
+    this.finishPause();
+  }
+
+  private finishPause(): void {
+    const paused = this.pausedStep;
+    if (!paused) return;
+    this.pausedStep = undefined;
+    this.pauseHost?.hideRuling();
+    this.pauseHost?.closeViews?.();
+    this.pc.complete();
+    this.changed();
+    this.output.appendLine(`[guide] step ${this.guide?.steps[paused.index]?.id ?? paused.index} complete`);
+    this.flowInto(paused.index);
+  }
+
+  private clearPause(): void {
+    if (!this.pausedStep) return;
+    this.pausedStep = undefined;
+    this.pauseHost?.hideRuling();
+  }
+
+  /** The read or comment step the replay is holding on, for the status bar. */
+  get pausedPauseStep(): ReplayStep | undefined {
+    return this.pausedStep === undefined ? undefined : this.guide?.steps[this.pausedStep.index];
+  }
+
+  // What a read step shows: its own fence, else the symbol (or whole file)
+  // from the sandbox, where the caller code a unit builds against lives, else
+  // the target.
+  private readViewText(step: ReplayStep): string | undefined {
+    if (step.after !== undefined) return step.after;
+    const rel = step.file.split(":")[0];
+    const wholeFile = step.symbol === rel;
+    const spec = languageForFile(rel);
+    const roots = [this.sandboxRoot, vscode.workspace.workspaceFolders?.[0]?.uri.fsPath];
+    for (const root of roots) {
+      if (!root) continue;
+      const text = this.readFileFromDisk(path.join(root, rel));
+      if (text === undefined) continue;
+      if (wholeFile) return text;
+      const symbol = spec ? extractSymbol(text, step.symbol, spec) : undefined;
+      if (symbol !== undefined) return symbol;
+    }
+    return undefined;
+  }
+
+  private progressOf(unit: string): { steps: number; done: number } {
+    let steps = 0;
+    let done = 0;
+    this.steps.forEach((s, i) => {
+      if ((s.phase ?? "Steps") !== unit) return;
+      steps++;
+      if (this.pc.status(i) === "done") done++;
+    });
+    return { steps, done };
+  }
+
+  private enterUnit(step: ReplayStep): void {
+    if (!this.clock) return;
+    this.recordUnit(this.clock.enter(step.phase ?? "Steps", (u) => this.progressOf(u)));
+  }
+
+  private stopClock(reason: StopReason): void {
+    if (!this.clock) return;
+    this.recordUnit(this.clock.leave(reason, (u) => this.progressOf(u)));
+  }
+
+  private recordUnit(events: UnitEvent[]): void {
+    for (const e of events) {
+      this.pauseHost?.record("unit-times.jsonl", jsonLine(e, this.pauseHost?.author?.()));
+      this.output.appendLine(`[unit] ${e.event} ${e.unit}${e.event === "stop" ? ` (${e.done}/${e.steps} done, ${e.reason})` : ""}`);
+    }
+  }
+
   /** Run the next unrun step; tells the human when none remain. */
   async runCurrent(): Promise<void> {
     if (this.reshowGate()) return;
+    if (this.pausedStep !== undefined) {
+      this.continuePause();
+      return;
+    }
     const next = this.pc.next();
     if (next >= this.steps.length) {
       vscode.window.showInformationMessage(
