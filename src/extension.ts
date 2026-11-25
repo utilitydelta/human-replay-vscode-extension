@@ -13,7 +13,9 @@ import { GateQuickPick } from "./retrospective/gateSurface";
 import { PendingGate } from "./retrospective/gate";
 import { ReplayPauseSurface } from "./pauseSurface";
 import { recordedPauseDone } from "./disclosure/replayRecord";
-import { typesBytes } from "./disclosure/guide";
+import { ReplayStep, parseGuide, typesBytes } from "./disclosure/guide";
+import { candidateRoots, diskProbeFs, probeSandbox, rankSandboxes, sessionGuides, witnessed } from "./disclosure/sandboxProbe";
+import { execFileSync } from "child_process";
 
 // Every line carries a wall clock. Without it the channel says what happened
 // and in what order, but never WHERE THE TIME WENT — and "it feels slow between
@@ -626,6 +628,112 @@ export function activate(context: vscode.ExtensionContext) {
     return true;
   };
 
+  // The git worktrees of the target repo: the commonest home for an agent's
+  // lead branch beside the human's checkout.
+  const gitWorktrees = (cwd: string): string[] => {
+    try {
+      return execFileSync("git", ["worktree", "list", "--porcelain"], { cwd, encoding: "utf8", timeout: 2000 })
+        .split("\n")
+        .filter((l) => l.startsWith("worktree "))
+        .map((l) => l.slice("worktree ".length));
+    } catch {
+      return [];
+    }
+  };
+
+  // Find the tree a session folder's guide replays from. The bytes decide: a
+  // folder is the sandbox when every step that reads from the sandbox
+  // resolves there. One such folder is used; several or none go to the human.
+  // `previous` is the sandbox this session folder replayed from last time,
+  // kept while it still resolves every step: once the human has landed it all,
+  // no byte tells it apart from the target any more. undefined means the guide needs
+  // no sandbox.
+  const findSandbox = async (
+    steps: ReplayStep[],
+    sessionDir: string,
+    sandboxParent: string,
+    previous: string | undefined,
+    recent: string[],
+  ): Promise<string | undefined | "cancelled"> => {
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!workspaceRoot) {
+      vscode.window.showWarningMessage("Human Replay: open the repo you are replaying into first, then Start Replay.");
+      return "cancelled";
+    }
+    const candidates = candidateRoots(
+      {
+        sessionDir,
+        workspaceRoot,
+        stopAt: os.homedir(),
+        sandboxParent,
+        extra: [...(previous ? [previous] : []), ...gitWorktrees(workspaceRoot), ...recent],
+      },
+      diskProbeFs,
+    );
+    const started = Date.now();
+    const verdict = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: "Human Replay: finding the agent's code for this guide…" },
+      async () => rankSandboxes(steps, candidates, diskProbeFs, workspaceRoot),
+    );
+    output.appendLine(`[replay] sandbox probe: ${candidates.length} folder(s) in ${Date.now() - started}ms, ${verdict.kind}`);
+    if (verdict.kind === "not-needed") return undefined;
+    for (const r of verdict.ranked.slice(0, 5)) {
+      output.appendLine(`[replay]   ${r.resolved}/${r.total} ${r.root}${r.missing.length ? ` (missing ${r.missing.slice(0, 5).join(", ")})` : ""}`);
+    }
+    const full = verdict.ranked.filter((r) => r.resolved === r.total);
+    const kept = previous ? full.find((r) => r.root === diskProbeFs.realPath!(previous)) : undefined;
+    if (kept) return kept.root;
+    if (verdict.kind === "unique") {
+      vscode.window.setStatusBarMessage(`Human Replay: replaying from ${verdict.pick.root}, which holds every step's code`, 6000);
+      return verdict.pick.root;
+    }
+
+    type Pick = vscode.QuickPickItem & { root?: string; browse?: boolean };
+    // Nothing ranked means nothing to read the count from: count against the
+    // target, which reads every step's file the same way.
+    const total = verdict.ranked[0]?.total ?? probeSandbox(steps, workspaceRoot, diskProbeFs).total;
+    const items: Pick[] = verdict.ranked.slice(0, 10).map((r) => ({
+      label: path.basename(r.root),
+      description: path.dirname(r.root),
+      detail:
+        r.resolved < r.total
+          ? `holds ${r.resolved} of ${r.total} steps' code`
+          : witnessed(steps, r.root, diskProbeFs, workspaceRoot)
+            ? `holds all ${r.total} steps' code, including code your branch lacks`
+            : `holds all ${r.total} steps' code, but nothing your branch lacks`,
+      root: r.root,
+    }));
+    items.push({ label: "$(folder-opened) Browse…", detail: "Pick the folder holding the agent's finished code", browse: true });
+    const choice = await vscode.window.showQuickPick(items, {
+      title:
+        verdict.kind === "ambiguous"
+          ? `Human Replay: ${full.filter((r) => witnessed(steps, r.root, diskProbeFs, workspaceRoot)).length} folders hold code your branch lacks. Which one did the agent write?`
+          : verdict.kind === "unproven"
+            ? "Human Replay: these folders hold every step's code, but none differs from your branch. Which one did the agent write?"
+            : `Human Replay: no folder holds all ${total} steps' code. Pick the agent's folder`,
+      placeHolder: "The sandbox: the agent's finished work this guide replays",
+    });
+    if (!choice) return "cancelled";
+    if (!choice.browse) return choice.root;
+    const chosen = await vscode.window.showOpenDialog({
+      canSelectFolders: true,
+      canSelectFiles: false,
+      canSelectMany: false,
+      openLabel: "Replay from this sandbox",
+      defaultUri: vscode.Uri.file(path.dirname(workspaceRoot)),
+    });
+    if (!chosen?.[0]) return "cancelled";
+    const root = chosen[0].fsPath;
+    const probe = probeSandbox(steps, root, diskProbeFs);
+    output.appendLine(`[replay] sandbox browsed: ${probe.resolved}/${probe.total} ${root}`);
+    if (probe.resolved < probe.total) {
+      vscode.window.showWarningMessage(
+        `Human Replay: ${root} holds ${probe.resolved} of ${probe.total} steps' code. Steps ${probe.missing.slice(0, 5).join(", ")}${probe.missing.length > 5 ? "…" : ""} will stop and say so.`,
+      );
+    }
+    return root;
+  };
+
   // THE entry point — the whole dev flow starts here. Pick a sandbox (last one
   // pinned; "self-contained" for a fence-embedded guide that needs none), find
   // its guide, resume from ground truth, and flow straight into the next step.
@@ -653,35 +761,42 @@ export function activate(context: vscode.ExtensionContext) {
         output.appendLine(`[replay] no sandbox folder at ${parent}`);
       }
 
-      const last = context.workspaceState.get<{ sandbox: string; guide: string }>("humanReplay.lastReplay");
-      // Sandboxes picked with Browse live anywhere; they are remembered across
-      // workspaces so the next Start Replay offers them without a setting.
+      // `session` is set when the replay started from a session folder: the
+      // guide lives there and the sandbox was found by probing.
+      const last = context.workspaceState.get<{ sandbox?: string; guide: string; session?: string }>("humanReplay.lastReplay");
+      const lastPin = last?.session ?? last?.sandbox;
+      // Sandboxes and session folders picked with Browse live anywhere; they are
+      // remembered across workspaces so the next Start Replay offers them without
+      // a setting.
       const RECENT = "humanReplay.recentSandboxes";
       const recent = (context.globalState.get<string[]>(RECENT) ?? []).filter((p) => fs.existsSync(p));
       const listed = new Set(dirs.map((d) => d.full));
-      const elsewhere = [...new Set([...(last && !listed.has(last.sandbox) ? [last.sandbox] : []), ...recent])].filter(
+      const elsewhere = [...new Set([...(lastPin && !listed.has(lastPin) ? [lastPin] : []), ...recent])].filter(
         (p) => !listed.has(p) && fs.existsSync(p),
       );
-      const guideNote = (full: string) =>
-        fs.existsSync(path.join(full, "session", "replay-guide.md"))
+      const guideNote = (full: string) => {
+        const inSession = sessionGuides(full, diskProbeFs);
+        if (inSession.length > 0) return `session folder: ${inSession.map((g) => path.basename(g)).join(", ")}`;
+        return fs.existsSync(path.join(full, "session", "replay-guide.md"))
           ? "has session/replay-guide.md"
           : fs.existsSync(path.join(full, "replay-guides"))
             ? "has replay-guides/"
             : undefined;
+      };
       type SandboxItem = vscode.QuickPickItem & { full?: string; browse?: boolean };
       const items: SandboxItem[] = [
         ...dirs.map((d) => ({ label: d.name, full: d.full })),
         ...elsewhere.map((full) => ({ label: path.basename(full), full })),
       ].map((d) => ({
         ...d,
-        description: d.full === last?.sandbox ? "last replay" : listed.has(d.full) ? undefined : path.dirname(d.full),
+        description: d.full === lastPin ? "last replay" : listed.has(d.full) ? undefined : path.dirname(d.full),
         detail: guideNote(d.full),
       }));
-      // The sandbox being resumed is almost always the one you want — pin it first.
-      items.sort((a, b) => (a.full === last?.sandbox ? -1 : 0) - (b.full === last?.sandbox ? -1 : 0));
+      // The replay being resumed is almost always the one you want — pin it first.
+      items.sort((a, b) => (a.full === lastPin ? -1 : 0) - (b.full === lastPin ? -1 : 0));
       items.push({
         label: "$(folder-opened) Browse…",
-        detail: "Pick any folder as the sandbox for this replay; it is remembered for next time",
+        detail: "Pick a session folder (holds replay-guide.md) or the sandbox itself; it is remembered for next time",
         browse: true,
       });
       items.push({
@@ -698,14 +813,60 @@ export function activate(context: vscode.ExtensionContext) {
           canSelectFolders: true,
           canSelectFiles: false,
           canSelectMany: false,
-          openLabel: "Replay from this sandbox",
-          defaultUri: vscode.Uri.file(last?.sandbox ? path.dirname(last.sandbox) : os.homedir()),
+          openLabel: "Replay from this folder",
+          defaultUri: vscode.Uri.file(lastPin ? path.dirname(lastPin) : os.homedir()),
         });
         if (!chosen?.[0]) return;
         const full = chosen[0].fsPath;
         await context.globalState.update(RECENT, [full, ...recent.filter((p) => p !== full)].slice(0, 8));
         sandboxPick = { label: path.basename(full), full };
       }
+
+      // A session folder holds the guide at its top level and no code; the
+      // sandbox is found from the guide's own steps once one is picked.
+      // A sandbox that carries session/replay-guide.md or replay-guides/ keeps
+      // the sandbox flow, whatever else sits at its root.
+      const isSandbox = (dir: string) => fs.existsSync(path.join(dir, "session", "replay-guide.md")) || fs.existsSync(path.join(dir, "replay-guides"));
+      const sessionDir =
+        sandboxPick.full && !isSandbox(sandboxPick.full) && sessionGuides(sandboxPick.full, diskProbeFs).length > 0 ? sandboxPick.full : undefined;
+      if (sessionDir) {
+        const found = sessionGuides(sessionDir, diskProbeFs);
+        const ordered = last?.session === sessionDir && found.includes(last.guide) ? [last.guide, ...found.filter((g) => g !== last.guide)] : found;
+        const guide =
+          ordered.length === 1
+            ? ordered[0]
+            : await vscode.window
+                .showQuickPick(
+                  ordered.map((g) => ({ label: path.basename(g), description: g === last?.guide ? "last replay" : undefined, full: g })),
+                  { title: "Human Replay: which guide in this session folder?" },
+                )
+                .then((c) => c?.full);
+        if (!guide) return;
+        output.appendLine(`[replay] session folder: ${sessionDir}, guide ${path.basename(guide)}`);
+        let steps;
+        try {
+          steps = parseGuide(fs.readFileSync(guide, "utf8")).steps;
+        } catch (e) {
+          vscode.window.showErrorMessage(`Human Replay: ${String(e)}`);
+          return;
+        }
+        const sandbox = await findSandbox(steps, sessionDir, parent, last?.session === sessionDir ? last.sandbox : undefined, recent);
+        if (sandbox === "cancelled") return;
+        guideRunner.setSandboxRoot(sandbox);
+        output.appendLine(`[replay] sandbox: ${sandbox ?? "(none — self-contained guide)"}`);
+        const uri = vscode.Uri.file(guide);
+        try {
+          await loadGuideFrom(uri);
+        } catch (e) {
+          vscode.window.showErrorMessage(`Human Replay: ${String(e)}`);
+          return;
+        }
+        void context.workspaceState.update("humanReplay.lastReplay", { sandbox, guide, session: sessionDir });
+        await guideRunner.runCurrent();
+        updateGuideStatus();
+        return;
+      }
+
       guideRunner.setSandboxRoot(sandboxPick.full);
       output.appendLine(`[replay] sandbox: ${sandboxPick.full ?? "(none — self-contained guide)"}`);
 
