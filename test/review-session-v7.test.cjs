@@ -6,17 +6,21 @@
 
 const test = require("node:test");
 const assert = require("node:assert");
-const path = require("path");
+// The fake trees use POSIX paths on every OS: the module and the fake
+// filesystem both run on path.posix, so Windows CI reads "/w/t" as written.
+const nativePath = require("path");
+const path = nativePath.posix;
 const fs = require("fs");
 const esbuild = require("esbuild");
 
-const bundle = path.join(__dirname, ".review-session-v7.bundle.cjs");
+const bundle = nativePath.join(__dirname, ".review-session-v7.bundle.cjs");
 esbuild.buildSync({
-  entryPoints: [path.join(__dirname, "../src/disclosure/sandboxProbe.ts")],
+  entryPoints: [nativePath.join(__dirname, "../src/disclosure/sandboxProbe.ts")],
   bundle: true,
   outfile: bundle,
   format: "cjs",
   platform: "node",
+  alias: { path: "path/posix" },
   external: ["tree-sitter", "tree-sitter-rust", "tree-sitter-c-sharp", "tree-sitter-typescript", "tree-sitter-python", "@tree-sitter-grammars/tree-sitter-markdown", "tree-sitter-html", "tree-sitter-css"],
 });
 const { sessionGuides, candidateRoots, rankSandboxes } = require(bundle);
