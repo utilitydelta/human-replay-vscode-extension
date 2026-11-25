@@ -1,5 +1,30 @@
 # Changelog
 
+## 3.1.0
+
+Replaying a guide that lives in a session folder in some other repo needed
+`humanReplay.guidePath` set by hand, and the sandbox pointed at too. The guide
+names no sandbox. The bytes already say where it is.
+
+- Start Replay, Browse..., pick a session folder: any folder with
+  `replay-guide.md` (or `replay-guide.<lang>.md`) at its top level. Several
+  guides there, you pick one.
+- The sandbox is found model-free. Every likely folder is probed: the session
+  folder and its parents, your repo's git worktrees, the folders beside your
+  repo, `~/sandbox`, remembered folders. A folder qualifies when every step's
+  code resolves there and it holds code your branch lacks (a created item, or
+  an item a delete removes). Your own repo never qualifies, symlinks included.
+- One folder qualifies: the replay starts. Several, or none: a picker with each
+  folder's score and a Browse entry. Never a guess.
+- A guide that only edits existing code can't prove a folder, since an edit you
+  already landed and an edit still to come look the same. It asks once.
+- The session folder is pinned as "last replay" and resumes with the same guide
+  and sandbox.
+- A sandbox with `session/replay-guide.md` or `replay-guides/` replays as before.
+
+The babadook session-v6 guide finds its lead worktree at 188/188 steps, next
+best 2/188, across 141 folders.
+
 ## 3.0.0
 
 A guide of 20 phases and several hundred steps doesn't get replayed in one
