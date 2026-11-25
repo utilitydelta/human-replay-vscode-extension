@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.1.1
+
+3.1.0 never reached the Marketplace: its Windows package failed the new probe
+tests, which wrote their fake trees as POSIX paths. The tests now run on POSIX
+paths on every OS. Same features as 3.1.0, below.
+
 ## 3.1.0
 
 Replaying a guide that lives in a session folder in some other repo needed
